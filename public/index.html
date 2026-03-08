@@ -564,7 +564,7 @@
                     <div style={{ fontSize: 11, marginTop: 4, color: "#3d4663" }}>Try adjusting your hardware specs or relaxing filters</div>
                   </div>
                 ) : (
-                  results.map((m, i) => <ModelRow key={m.name} model={m} index={i} />)
+                  results.map((m, i) => <ModelRow key={`${m.name}-${m.provider}`} model={m} index={i} />)
                 )}
               </div>
 
