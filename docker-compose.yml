@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    container_name: llmfit
+    restart: unless-stopped
+    networks:
+      - web
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.llmfit.rule=Host(`llmfit.dev.tinotran.com`)"
+      - "traefik.http.routers.llmfit.tls.certresolver=letsencrypt"
+      - "traefik.http.services.llmfit.loadbalancer.server.port=3000"
+
+networks:
+  web:
+    external: true

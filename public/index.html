@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>llmfit — Hardware-Aware LLM Model Finder</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; }
+    body { background: #0a0f1c; color: #ccd6f6; font-family: 'Outfit', system-ui, sans-serif; }
+    ::selection { background: rgba(0,255,159,0.2); }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+    input[type="range"] { -webkit-appearance: none; appearance: none; background: rgba(255,255,255,0.06); border-radius: 3px; outline: none; height: 6px; width: 100%; cursor: pointer; }
+    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #00ff9f; cursor: pointer; box-shadow: 0 0 10px rgba(0,255,159,0.4); }
+    input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #00ff9f; cursor: pointer; border: none; }
+    select { -webkit-appearance: none; appearance: none; }
+    @keyframes fadeSlideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .fade-in { animation: fadeSlideIn 0.3s ease both; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.2/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    const FIT_COLORS = { perfect: "#00ff9f", good: "#4ecdc4", marginal: "#ffd93d", too_tight: "#ff6b6b" };
+    const FIT_BG    = { perfect: "rgba(0,255,159,0.08)", good: "rgba(78,205,196,0.08)", marginal: "rgba(255,217,61,0.08)", too_tight: "rgba(255,107,107,0.08)" };
+    const MODE_LABELS = { gpu: "GPU", "cpu+gpu": "CPU+GPU", cpu: "CPU", moe: "MoE" };
+
+    const BACKENDS = [
+      { value: "cuda",    label: "NVIDIA (CUDA)" },
+      { value: "rocm",    label: "AMD (ROCm)" },
+      { value: "metal",   label: "Apple Silicon" },
+      { value: "sycl",    label: "Intel (SYCL)" },
+      { value: "cpu_arm", label: "CPU only (ARM)" },
+      { value: "cpu_x86", label: "CPU only (x86)" },
+    ];
+
+    // --- API ---
+    async function fetchScores(specs, options = {}) {
+      const res = await fetch("/api/score", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...specs, ...options }),
+      });
+      return res.json();
+    }
+
+    // --- Components ---
+    function SliderInput({ label, value, onChange, min, max, step, unit, presets }) {
+      return (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <label className="mono" style={{ fontSize: 11, color: "#8892b0", letterSpacing: 1.5, textTransform: "uppercase" }}>{label}</label>
+            <span className="mono" style={{ fontSize: 14, color: "#ccd6f6", fontWeight: 600 }}>{value} {unit}</span>
+          </div>
+          <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} />
+          {presets && (
+            <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+              {presets.map((p) => (
+                <button key={p} onClick={() => onChange(p)} style={{
+                  background: value === p ? "rgba(0,255,159,0.15)" : "rgba(255,255,255,0.03)",
+                  border: `1px solid ${value === p ? "#00ff9f" : "rgba(255,255,255,0.08)"}`,
+                  color: value === p ? "#00ff9f" : "#8892b0",
+                  borderRadius: 6, padding: "3px 10px", fontSize: 11,
+                  fontFamily: "'JetBrains Mono', monospace", cursor: "pointer",
+                  transition: "all 0.15s ease",
+                }}>{p}{unit}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function ScoreBar({ label, value, color }) {
+      return (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+          <span className="mono" style={{ fontSize: 9, color: "#5a6785", width: 14, textAlign: "right" }}>{label}</span>
+          <div style={{ flex: 1, height: 4, background: "rgba(255,255,255,0.04)", borderRadius: 2 }}>
+            <div style={{ width: `${value}%`, height: "100%", background: color, borderRadius: 2, transition: "width 0.4s ease" }} />
+          </div>
+          <span className="mono" style={{ fontSize: 9, color: "#5a6785", width: 20 }}>{value}</span>
+        </div>
+      );
+    }
+
+    function ModelRow({ model, index }) {
+      const [expanded, setExpanded] = useState(false);
+      const fitColor = FIT_COLORS[model.fit_level];
+      const fitBg = FIT_BG[model.fit_level];
+
+      return (
+        <div
+          onClick={() => setExpanded(!expanded)}
+          className="fade-in"
+          style={{
+            background: expanded ? "rgba(255,255,255,0.03)" : "transparent",
+            borderBottom: "1px solid rgba(255,255,255,0.04)",
+            padding: "12px 16px", cursor: "pointer",
+            transition: "background 0.15s ease",
+            animationDelay: `${index * 0.02}s`,
+          }}
+          onMouseEnter={(e) => { if (!expanded) e.currentTarget.style.background = "rgba(255,255,255,0.02)"; }}
+          onMouseLeave={(e) => { if (!expanded) e.currentTarget.style.background = expanded ? "rgba(255,255,255,0.03)" : "transparent"; }}
+        >
+          <div style={{ display: "grid", gridTemplateColumns: "50px 1fr 90px 70px 65px 70px 80px 70px", alignItems: "center", gap: 8 }}>
+            <div className="mono" style={{
+              fontSize: 18, fontWeight: 700,
+              color: model.score >= 70 ? "#00ff9f" : model.score >= 50 ? "#4ecdc4" : model.score >= 30 ? "#ffd93d" : "#ff6b6b",
+            }}>{model.score}</div>
+            <div>
+              <div style={{ fontSize: 13, color: "#ccd6f6", fontWeight: 500, marginBottom: 2 }}>{model.name}</div>
+              <div className="mono" style={{ fontSize: 10, color: "#5a6785" }}>{model.provider} · {model.params_b}B params</div>
+            </div>
+            <div className="mono" style={{
+              fontSize: 10, padding: "3px 8px", background: fitBg, color: fitColor,
+              borderRadius: 4, textAlign: "center", border: `1px solid ${fitColor}22`,
+              textTransform: "uppercase", letterSpacing: 1,
+            }}>{model.fit_level}</div>
+            <div className="mono" style={{ fontSize: 11, color: "#8892b0", textAlign: "center" }}>{model.quant}</div>
+            <div className="mono" style={{
+              fontSize: 10, color: "#a0aec0", background: "rgba(255,255,255,0.04)",
+              borderRadius: 4, padding: "2px 6px", textAlign: "center",
+            }}>{MODE_LABELS[model.run_mode]}</div>
+            <div className="mono" style={{ fontSize: 11, color: "#8892b0", textAlign: "center" }}>{model.mem_gb.toFixed(1)}GB</div>
+            <div className="mono" style={{ fontSize: 11, color: "#8892b0", textAlign: "center" }}>{model.tok_per_sec} t/s</div>
+            <div className="mono" style={{ fontSize: 10, color: "#5a6785", textTransform: "capitalize", textAlign: "center" }}>{model.use_case}</div>
+          </div>
+
+          {expanded && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 24 }}>
+              <div style={{ flex: 1 }}>
+                <ScoreBar label="Q" value={model.scores.quality} color="#7c3aed" />
+                <ScoreBar label="S" value={model.scores.speed} color="#06b6d4" />
+                <ScoreBar label="F" value={model.scores.fit} color="#00ff9f" />
+                <ScoreBar label="C" value={model.scores.context} color="#f59e0b" />
+              </div>
+              <div className="mono" style={{ fontSize: 10, color: "#5a6785", lineHeight: 1.8 }}>
+                <div>Context: {model.context.toLocaleString()} tokens</div>
+                <div>Memory utilization: {model.mem_pct}%</div>
+                <div>{model.is_moe ? `MoE: ${model.active_params_b}B active / ${model.params_b}B total` : `Dense: ${model.params_b}B parameters`}</div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function App() {
+      const [ram, setRam]           = useState(32);
+      const [vram, setVram]         = useState(12);
+      const [cores, setCores]       = useState(8);
+      const [backend, setBackend]   = useState("cuda");
+      const [filterFit, setFilterFit]         = useState("all");
+      const [filterUseCase, setFilterUseCase] = useState("all");
+      const [search, setSearch]     = useState("");
+      const [sortBy, setSortBy]     = useState("score");
+      const [results, setResults]   = useState([]);
+      const [totalModels, setTotalModels] = useState(0);
+      const [loading, setLoading]   = useState(false);
+      const [sidebarOpen, setSidebarOpen] = useState(true);
+      const debounceRef = useRef(null);
+
+      const isCpuOnly = backend === "cpu_x86" || backend === "cpu_arm";
+
+      const doFetch = useCallback(() => {
+        setLoading(true);
+        const specs = {
+          ram_gb: ram,
+          vram_gb: isCpuOnly ? 0 : vram,
+          cpu_cores: cores,
+          backend,
+          fit_filter: filterFit,
+          use_case_filter: filterUseCase,
+          search: search || undefined,
+          sort_by: sortBy,
+        };
+        fetchScores(specs).then((data) => {
+          setResults(data.results || []);
+          setTotalModels(data.total_models || 0);
+          setLoading(false);
+        }).catch(() => setLoading(false));
+      }, [ram, vram, cores, backend, filterFit, filterUseCase, search, sortBy, isCpuOnly]);
+
+      useEffect(() => {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = setTimeout(doFetch, 150);
+        return () => clearTimeout(debounceRef.current);
+      }, [doFetch]);
+
+      const runnable = results.filter((r) => r.fit_level !== "too_tight").length;
+
+      return (
+        <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+          {/* Header */}
+          <div style={{
+            borderBottom: "1px solid rgba(255,255,255,0.06)", padding: "16px 24px",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{
+                background: "none", border: "none", color: "#8892b0", fontSize: 18,
+                cursor: "pointer", padding: "2px 6px", lineHeight: 1,
+              }}>☰</button>
+              <div style={{
+                width: 30, height: 30, borderRadius: 8,
+                background: "linear-gradient(135deg, #00ff9f 0%, #06b6d4 100%)",
+                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15,
+              }}><span style={{ color: "#0a0f1c" }}>⚡</span></div>
+              <div>
+                <div style={{ fontSize: 15, fontWeight: 600, color: "#e2e8f0", letterSpacing: -0.3 }}>llmfit</div>
+                <div className="mono" style={{ fontSize: 9, color: "#5a6785", letterSpacing: 1 }}>HARDWARE-AWARE MODEL FINDER</div>
+              </div>
+            </div>
+            <div className="mono" style={{ fontSize: 11, color: "#5a6785" }}>
+              {totalModels} models · Powered by <a href="https://github.com/AlexsJones/llmfit" target="_blank" rel="noopener" style={{ color: "#4ecdc4", textDecoration: "none" }}>llmfit</a>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+            {/* Sidebar */}
+            {sidebarOpen && (
+              <div style={{
+                width: 300, borderRight: "1px solid rgba(255,255,255,0.06)",
+                padding: 24, overflowY: "auto", flexShrink: 0,
+                background: "rgba(255,255,255,0.01)",
+              }}>
+                <div className="mono" style={{ fontSize: 10, color: "#00ff9f", letterSpacing: 2, marginBottom: 20, textTransform: "uppercase" }}>
+                  ▸ Your Hardware
+                </div>
+
+                <div style={{ marginBottom: 20 }}>
+                  <label className="mono" style={{ fontSize: 11, color: "#8892b0", letterSpacing: 1.5, textTransform: "uppercase", display: "block", marginBottom: 8 }}>GPU Backend</label>
+                  <select value={backend} onChange={(e) => setBackend(e.target.value)} style={{
+                    width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8,
+                    color: "#ccd6f6", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", outline: "none", cursor: "pointer",
+                  }}>
+                    {BACKENDS.map((b) => <option key={b.value} value={b.value} style={{ background: "#0a0f1c" }}>{b.label}</option>)}
+                  </select>
+                </div>
+
+                <SliderInput label="System RAM" value={ram} onChange={setRam} min={4} max={256} step={4} unit="GB" presets={[8, 16, 32, 64, 128]} />
+                {!isCpuOnly && (
+                  <SliderInput label="GPU VRAM" value={vram} onChange={setVram} min={2} max={80} step={2} unit="GB" presets={[8, 12, 16, 24, 48, 80]} />
+                )}
+                <SliderInput label="CPU Cores" value={cores} onChange={setCores} min={2} max={128} step={2} unit="" presets={[4, 8, 16, 32, 64]} />
+
+                <div style={{
+                  marginTop: 24, padding: 14, borderRadius: 10,
+                  background: "rgba(0,255,159,0.03)", border: "1px solid rgba(0,255,159,0.08)",
+                }}>
+                  <div className="mono" style={{ fontSize: 10, color: "#00ff9f", letterSpacing: 1.5, marginBottom: 8, textTransform: "uppercase" }}>System Profile</div>
+                  <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.9 }}>
+                    <div>{ram}GB RAM · {cores} cores</div>
+                    <div>{isCpuOnly ? "No GPU" : `${vram}GB VRAM · ${BACKENDS.find(b => b.value === backend)?.label}`}</div>
+                    <div style={{ marginTop: 6, color: "#00ff9f", fontWeight: 600 }}>{runnable} runnable models</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Main */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+              {/* Toolbar */}
+              <div style={{
+                padding: "12px 20px", borderBottom: "1px solid rgba(255,255,255,0.06)",
+                display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+              }}>
+                <div style={{ position: "relative", flex: 1, minWidth: 180 }}>
+                  <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#5a6785", fontSize: 13 }}>⌕</span>
+                  <input type="text" placeholder="Search models, providers..." value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    style={{
+                      width: "100%", padding: "7px 12px 7px 30px",
+                      background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
+                      borderRadius: 8, color: "#ccd6f6", fontSize: 12, outline: "none",
+                      fontFamily: "'JetBrains Mono', monospace",
+                    }}
+                  />
+                </div>
+
+                {[
+                  { label: "Fit", value: filterFit, setter: setFilterFit, opts: ["all", "perfect", "good", "marginal"] },
+                  { label: "Use Case", value: filterUseCase, setter: setFilterUseCase, opts: ["all", "general", "coding", "reasoning", "chat", "embedding", "multimodal"] },
+                  { label: "Sort", value: sortBy, setter: setSortBy, opts: [["score","Score"],["params","Params"],["speed","Speed"],["mem","Memory"]] },
+                ].map((f) => (
+                  <select key={f.label} value={f.value} onChange={(e) => f.setter(e.target.value)} style={{
+                    padding: "7px 10px", background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8,
+                    color: "#8892b0", fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+                    outline: "none", cursor: "pointer",
+                  }}>
+                    {f.opts.map((o) => {
+                      const [val, lbl] = Array.isArray(o) ? o : [o, o];
+                      return <option key={val} value={val} style={{ background: "#0a0f1c", textTransform: "capitalize" }}>{f.label}: {lbl}</option>;
+                    })}
+                  </select>
+                ))}
+
+                {loading && (
+                  <div style={{ width: 16, height: 16, border: "2px solid rgba(0,255,159,0.2)", borderTop: "2px solid #00ff9f", borderRadius: "50%", animation: "spin 0.6s linear infinite" }} />
+                )}
+              </div>
+
+              {/* Table header */}
+              <div className="mono" style={{
+                display: "grid", gridTemplateColumns: "50px 1fr 90px 70px 65px 70px 80px 70px",
+                padding: "8px 16px", gap: 8,
+                borderBottom: "1px solid rgba(255,255,255,0.06)",
+                fontSize: 9, color: "#5a6785", letterSpacing: 1.2, textTransform: "uppercase",
+              }}>
+                <div>Score</div><div>Model</div><div style={{ textAlign: "center" }}>Fit</div>
+                <div style={{ textAlign: "center" }}>Quant</div><div style={{ textAlign: "center" }}>Mode</div>
+                <div style={{ textAlign: "center" }}>Mem</div><div style={{ textAlign: "center" }}>Speed</div>
+                <div style={{ textAlign: "center" }}>Use</div>
+              </div>
+
+              {/* Results */}
+              <div style={{ flex: 1, overflowY: "auto" }}>
+                {results.length === 0 && !loading ? (
+                  <div style={{ padding: 48, textAlign: "center", color: "#5a6785" }}>
+                    <div style={{ fontSize: 32, marginBottom: 12 }}>∅</div>
+                    <div className="mono" style={{ fontSize: 12 }}>No models match your criteria</div>
+                    <div style={{ fontSize: 11, marginTop: 4, color: "#3d4663" }}>Try adjusting your hardware specs or relaxing filters</div>
+                  </div>
+                ) : (
+                  results.map((m, i) => <ModelRow key={m.name} model={m} index={i} />)
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="mono" style={{
+                padding: "10px 20px", borderTop: "1px solid rgba(255,255,255,0.06)",
+                fontSize: 10, color: "#3d4663", display: "flex", justifyContent: "space-between",
+              }}>
+                <span>Showing {results.length} models · Click any row for details</span>
+                <span>Scoring engine based on llmfit formulas</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
