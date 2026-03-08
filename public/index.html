@@ -389,12 +389,14 @@
           onMouseEnter={(e) => { if (!expanded) e.currentTarget.style.background = "rgba(255,255,255,0.02)"; }}
           onMouseLeave={(e) => { if (!expanded) e.currentTarget.style.background = expanded ? "rgba(255,255,255,0.03)" : "transparent"; }}
         >
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 80px 70px 80px 90px", alignItems: "center", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 60px 60px 80px 70px 80px 90px", alignItems: "center", gap: 8 }}>
             <div>
               <div style={{ fontSize: 13, color: "#ccd6f6", fontWeight: 500, marginBottom: 2 }}>{model.name}</div>
               <div className="mono" style={{ fontSize: 10, color: "#5a6785" }}>{model.provider}</div>
             </div>
             <div style={{ textAlign: "center" }}><TierBadge tier={model.quality_tier} /></div>
+            <div className="mono" style={{ fontSize: 11, color: "#a78bfa", textAlign: "center" }} title="MMLU-Pro">{model.benchmarks?.mmlu_pro || "—"}</div>
+            <div className="mono" style={{ fontSize: 11, color: "#4ecdc4", textAlign: "center" }} title="HumanEval">{model.benchmarks?.humaneval || "—"}</div>
             <div className="mono" style={{ fontSize: 11, color: "#8892b0", textAlign: "center" }}>{model.throughput_tok_s} t/s</div>
             <div className="mono" style={{ fontSize: 11, color: "#8892b0", textAlign: "center" }}>{fmtCtx(model.context_window)}</div>
             <div className="mono" style={{ fontSize: 11, color: "#8892b0", textAlign: "center" }}>{model.ttft_ms}ms</div>
@@ -409,6 +411,16 @@
                 <div className="detail-row"><span className="detail-label">Output:</span><span className="detail-value">${model.pricing.output_per_1m} / 1M tokens</span></div>
                 <div className="detail-row"><span className="detail-label">Per prompt:</span><span className="detail-value">${cost.per_prompt.toFixed(4)}</span></div>
                 <div className="detail-row"><span className="detail-label">Monthly est:</span><span className="detail-value yellow">${cost.monthly.toFixed(2)}</span></div>
+
+                {model.benchmarks && (
+                  <>
+                    <div className="detail-section-title">Quality Benchmarks</div>
+                    <div className="detail-row"><span className="detail-label">MMLU-Pro:</span><span className="detail-value" style={{ color: "#a78bfa" }}>{model.benchmarks.mmlu_pro}</span></div>
+                    <div className="detail-row"><span className="detail-label">HumanEval:</span><span className="detail-value" style={{ color: "#4ecdc4" }}>{model.benchmarks.humaneval}%</span></div>
+                    <div className="detail-row"><span className="detail-label">SWE-bench:</span><span className="detail-value" style={{ color: "#f59e0b" }}>{model.benchmarks.swe_bench}%</span></div>
+                    <div className="detail-row"><span className="detail-label">Arena ELO:</span><span className="detail-value" style={{ color: "#00ff9f" }}>{model.benchmarks.arena_elo}</span></div>
+                  </>
+                )}
 
                 <div className="detail-section-title">Specs</div>
                 <div className="detail-row"><span className="detail-label">Throughput:</span><span className="detail-value">{model.throughput_tok_s} tok/s</span></div>
@@ -456,13 +468,25 @@
       const cost = calcCost(hostedModel, costProfile);
       const localWins = (dim) => dim === "local" ? { color: "#00ff9f", fontWeight: 600 } : { color: "#8892b0" };
       const hostedWins = (dim) => dim === "hosted" ? { color: "#4ecdc4", fontWeight: 600 } : { color: "#8892b0" };
+      const tieStyle = { color: "#ffd93d", fontWeight: 600 };
+
+      const bm = hostedModel.benchmarks || {};
+      // Map local quality score (0-100) to approximate benchmark ranges
+      const lq = localModel.scores?.quality || 0;
+      const localMmlu = Math.round(40 + lq * 0.48); // maps 0-100 → 40-88
+      const localHumaneval = Math.round(50 + lq * 0.47); // maps 0-100 → 50-97
+      const localSwe = Math.round(10 + lq * 0.65); // maps 0-100 → 10-75
 
       const speedWinner = localModel.tok_per_sec >= hostedModel.throughput_tok_s ? "local" : "hosted";
       const costWinner = "local";
       const privacyWinner = "local";
       const contextWinner = localModel.context >= hostedModel.context_window ? "local" : "hosted";
-      const latencyWinner = "hosted"; // hosted has no model load time, but TTFT exists. Local is instant after load.
+      const latencyWinner = "local";
       const availWinner = "hosted";
+      const mmluWinner = localMmlu >= (bm.mmlu_pro || 0) ? "local" : "hosted";
+      const hevalWinner = localHumaneval >= (bm.humaneval || 0) ? "local" : "hosted";
+      const sweWinner = localSwe >= (bm.swe_bench || 0) ? "local" : "hosted";
+      const eloWinner = "hosted"; // hosted models generally have higher quality at frontier tier
 
       return (
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -501,10 +525,11 @@
                 <div style={{ fontSize: 15, color: "#ccd6f6", fontWeight: 600, marginBottom: 4 }}>{localModel.name}</div>
                 <div className="mono" style={{ fontSize: 10, color: "#5a6785", marginBottom: 10 }}>{localModel.provider} &middot; {localModel.params_b}B &middot; {localModel.quant}</div>
                 <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.8 }}>
+                  <div>Quality Score: <span style={{ color: "#a78bfa" }}>{localModel.scores.quality}/100</span></div>
+                  <div>MMLU-Pro (est): <span style={{ color: "#a78bfa" }}>~{localMmlu}</span> &middot; HumanEval (est): <span style={{ color: "#4ecdc4" }}>~{localHumaneval}%</span></div>
                   <div>Speed: {localModel.tok_per_sec} tok/s</div>
                   <div>Context: {localModel.context.toLocaleString()} tokens</div>
                   <div>Memory: {localModel.mem_gb.toFixed(1)} GB ({localModel.run_mode})</div>
-                  <div>Runtime: {localModel.runtime}</div>
                   <div style={{ color: "#00ff9f", fontWeight: 600, marginTop: 4 }}>Cost: $0/month</div>
                 </div>
               </div>
@@ -515,10 +540,11 @@
                 <div style={{ fontSize: 15, color: "#ccd6f6", fontWeight: 600, marginBottom: 4 }}>{hostedModel.name}</div>
                 <div className="mono" style={{ fontSize: 10, color: "#5a6785", marginBottom: 10 }}>{hostedModel.provider} &middot; <TierBadge tier={hostedModel.quality_tier} /></div>
                 <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.8 }}>
+                  {bm.mmlu_pro && <div>MMLU-Pro: <span style={{ color: "#a78bfa" }}>{bm.mmlu_pro}</span> &middot; HumanEval: <span style={{ color: "#4ecdc4" }}>{bm.humaneval}%</span></div>}
+                  {bm.swe_bench && <div>SWE-bench: <span style={{ color: "#f59e0b" }}>{bm.swe_bench}%</span> &middot; Arena ELO: <span style={{ color: "#00ff9f" }}>{bm.arena_elo}</span></div>}
                   <div>Speed: {hostedModel.throughput_tok_s} tok/s</div>
                   <div>Context: {hostedModel.context_window.toLocaleString()} tokens</div>
                   <div>TTFT: {hostedModel.ttft_ms} ms</div>
-                  <div>Pricing: ${hostedModel.pricing.input_per_1m}/${hostedModel.pricing.output_per_1m} per 1M tok</div>
                   <div style={{ color: "#ffd93d", fontWeight: 600, marginTop: 4 }}>Cost: ${cost.monthly}/month</div>
                 </div>
               </div>
@@ -535,6 +561,10 @@
                 <div>Dimension</div><div>Local</div><div>Hosted</div>
               </div>
               {[
+                { dim: "MMLU-Pro",  local: `~${localMmlu} (est)`, hosted: `${bm.mmlu_pro || "—"}`, winner: mmluWinner, section: "quality" },
+                { dim: "HumanEval", local: `~${localHumaneval}% (est)`, hosted: `${bm.humaneval || "—"}%`, winner: hevalWinner, section: "quality" },
+                { dim: "SWE-bench", local: `~${localSwe}% (est)`, hosted: `${bm.swe_bench || "—"}%`, winner: sweWinner, section: "quality" },
+                { dim: "Arena ELO", local: "N/A", hosted: `${bm.arena_elo || "—"}`, winner: eloWinner, section: "quality" },
                 { dim: "Speed",   local: `${localModel.tok_per_sec} tok/s`, hosted: `${hostedModel.throughput_tok_s} tok/s`, winner: speedWinner },
                 { dim: "Cost",    local: "$0 / month", hosted: `$${cost.monthly} / month`, winner: costWinner },
                 { dim: "Privacy", local: "Full (on-device)", hosted: "Data sent to provider", winner: privacyWinner },
@@ -542,16 +572,22 @@
                 { dim: "Offline", local: "Yes", hosted: "No", winner: "local" },
                 { dim: "Setup",   local: "Download + runtime", hosted: "API key only", winner: availWinner },
                 { dim: "Latency", local: "~0ms (after load)", hosted: `${hostedModel.ttft_ms}ms TTFT`, winner: "local" },
-              ].map((row) => (
-                <div key={row.dim} className="mono" style={{
-                  display: "grid", gridTemplateColumns: "120px 1fr 1fr",
-                  padding: "8px 16px", gap: 8, fontSize: 11,
-                  borderBottom: "1px solid rgba(255,255,255,0.03)",
-                }}>
-                  <div style={{ color: "#5a6785" }}>{row.dim}</div>
-                  <div style={localWins(row.winner)}>{row.local}</div>
-                  <div style={hostedWins(row.winner)}>{row.hosted}</div>
-                </div>
+              ].map((row, i, arr) => (
+                <React.Fragment key={row.dim}>
+                  {i > 0 && arr[i-1].section === "quality" && !row.section && (
+                    <div style={{ borderBottom: "1px solid rgba(255,255,255,0.08)", margin: "0 16px" }} />
+                  )}
+                  <div className="mono" style={{
+                    display: "grid", gridTemplateColumns: "120px 1fr 1fr",
+                    padding: "8px 16px", gap: 8, fontSize: 11,
+                    borderBottom: "1px solid rgba(255,255,255,0.03)",
+                    background: row.section === "quality" ? "rgba(124,58,237,0.03)" : "transparent",
+                  }}>
+                    <div style={{ color: row.section === "quality" ? "#a78bfa" : "#5a6785" }}>{row.dim}</div>
+                    <div style={localWins(row.winner)}>{row.local}</div>
+                    <div style={hostedWins(row.winner)}>{row.hosted}</div>
+                  </div>
+                </React.Fragment>
               ))}
             </div>
 
@@ -873,13 +909,15 @@
 
                 {/* Hosted table header */}
                 <div className="mono" style={{
-                  display: "grid", gridTemplateColumns: "1fr 90px 80px 70px 80px 90px",
+                  display: "grid", gridTemplateColumns: "1fr 90px 60px 60px 80px 70px 80px 90px",
                   padding: "8px 16px", gap: 8,
                   borderBottom: "1px solid rgba(255,255,255,0.06)",
                   fontSize: 9, color: "#5a6785", letterSpacing: 1.2, textTransform: "uppercase",
                 }}>
                   <div>Model</div>
                   <div style={{ textAlign: "center" }}>Tier</div>
+                  <div style={{ textAlign: "center", color: "#a78bfa" }}>MMLU</div>
+                  <div style={{ textAlign: "center", color: "#4ecdc4" }}>HEval</div>
                   <div style={{ textAlign: "center" }}>Speed</div>
                   <div style={{ textAlign: "center" }}>Context</div>
                   <div style={{ textAlign: "center" }}>TTFT</div>
