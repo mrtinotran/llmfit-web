@@ -60,6 +60,35 @@
       transition: all 0.15s ease;
     }
     .ram-btn.active { background: rgba(0,255,159,0.15); border-color: #00ff9f; color: #00ff9f; }
+    .tab-btn {
+      padding: 6px 16px; border: none; border-bottom: 2px solid transparent;
+      background: transparent; color: #5a6785; font-size: 12px;
+      font-family: 'JetBrains Mono', monospace; cursor: pointer; transition: all 0.15s ease;
+    }
+    .tab-btn:hover { color: #8892b0; }
+    .tab-btn.active { color: #00ff9f; border-bottom-color: #00ff9f; }
+    .tier-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 9px;
+      font-family: 'JetBrains Mono', monospace; letter-spacing: 1px; text-transform: uppercase;
+    }
+    .tier-frontier { background: rgba(124,58,237,0.15); color: #a78bfa; border: 1px solid rgba(124,58,237,0.3); }
+    .tier-strong { background: rgba(6,182,212,0.15); color: #4ecdc4; border: 1px solid rgba(6,182,212,0.3); }
+    .tier-mid { background: rgba(245,158,11,0.15); color: #ffd93d; border: 1px solid rgba(245,158,11,0.3); }
+    .tier-budget { background: rgba(255,255,255,0.05); color: #8892b0; border: 1px solid rgba(255,255,255,0.1); }
+    .compare-btn {
+      padding: 5px 14px; border: 1px solid rgba(0,255,159,0.3); border-radius: 6px;
+      background: rgba(0,255,159,0.08); color: #00ff9f; font-size: 10px;
+      font-family: 'JetBrains Mono', monospace; cursor: pointer; transition: all 0.15s ease;
+      letter-spacing: 0.5px;
+    }
+    .compare-btn:hover { background: rgba(0,255,159,0.15); border-color: #00ff9f; }
+    .cost-input {
+      width: 100%; padding: 6px 10px; background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 6px;
+      color: #ccd6f6; font-size: 12px; font-family: 'JetBrains Mono', monospace;
+      outline: none;
+    }
+    .cost-input:focus { border-color: rgba(0,255,159,0.3); }
   </style>
 </head>
 <body>
@@ -70,11 +99,12 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.26.2/babel.min.js"></script>
 
   <script type="text/babel">
-    const { useState, useEffect, useRef, useCallback } = React;
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
     const FIT_COLORS = { perfect: "#00ff9f", good: "#4ecdc4", marginal: "#ffd93d", too_tight: "#ff6b6b" };
     const FIT_BG    = { perfect: "rgba(0,255,159,0.08)", good: "rgba(78,205,196,0.08)", marginal: "rgba(255,217,61,0.08)", too_tight: "rgba(255,107,107,0.08)" };
     const MODE_LABELS = { gpu: "GPU", "cpu+gpu": "CPU+GPU", cpu: "CPU", moe: "MoE" };
+    const TIER_ORDER = { frontier: 0, strong: 1, mid: 2, budget: 3 };
 
     const USE_CASE_LABELS = {
       coding: "Code generation and completion",
@@ -85,7 +115,7 @@
       general: "General purpose",
     };
 
-    // --- Hardware Profiles ---
+    // === HARDWARE PROFILES ===
     const APPLE_CHIPS = [
       { chip: "M1",       mem_options: [8, 16],              cores: 8,  gpu_cores: 7,  bandwidth: 68.25 },
       { chip: "M1 Pro",   mem_options: [16, 32],             cores: 10, gpu_cores: 16, bandwidth: 200 },
@@ -140,7 +170,37 @@
 
     const X86_RAM_OPTIONS = [16, 32, 64, 128, 256, 512];
 
-    // --- API ---
+    // === HELPERS ===
+    function findComparableHosted(localModel, hostedModels) {
+      const qScore = localModel.scores?.quality || 0;
+      const tier = qScore >= 80 ? "frontier" : qScore >= 60 ? "strong" : qScore >= 40 ? "mid" : "budget";
+      const useCase = localModel.use_case || "chat";
+      const scored = hostedModels.map((h) => {
+        const tierDist = Math.abs((TIER_ORDER[h.quality_tier] || 2) - (TIER_ORDER[tier] || 2));
+        const capMatch = h.capabilities.includes(useCase) ? 1 : 0;
+        return { model: h, score: capMatch * 10 - tierDist };
+      });
+      scored.sort((a, b) => b.score - a.score);
+      return scored.slice(0, 3).map((s) => s.model);
+    }
+
+    function calcCost(model, profile) {
+      const { prompts_per_day, avg_input_tokens, avg_output_tokens } = profile;
+      const days = 30;
+      const mc = (prompts_per_day * avg_input_tokens * days / 1e6) * model.pricing.input_per_1m
+               + (prompts_per_day * avg_output_tokens * days / 1e6) * model.pricing.output_per_1m;
+      const cpp = (avg_input_tokens / 1e6) * model.pricing.input_per_1m
+                + (avg_output_tokens / 1e6) * model.pricing.output_per_1m;
+      return { monthly: Math.round(mc * 100) / 100, per_prompt: Math.round(cpp * 10000) / 10000 };
+    }
+
+    function fmtCtx(n) {
+      if (n >= 1048576) return (n / 1048576).toFixed(1) + "M";
+      if (n >= 1000) return Math.round(n / 1000) + "K";
+      return n.toString();
+    }
+
+    // === API ===
     async function fetchScores(specs, options = {}) {
       const res = await fetch("/api/score", {
         method: "POST",
@@ -150,7 +210,12 @@
       return res.json();
     }
 
-    // --- Components ---
+    async function fetchHosted() {
+      const res = await fetch("/api/hosted");
+      return res.json();
+    }
+
+    // === COMPONENTS ===
     function ScoreBar({ label, value, color }) {
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
@@ -163,7 +228,12 @@
       );
     }
 
-    function ModelRow({ model, index }) {
+    function TierBadge({ tier }) {
+      return <span className={`tier-badge tier-${tier}`}>{tier}</span>;
+    }
+
+    // === LOCAL MODEL ROW ===
+    function ModelRow({ model, index, onCompare }) {
       const [expanded, setExpanded] = useState(false);
       const fitColor = FIT_COLORS[model.fit_level];
       const fitBg = FIT_BG[model.fit_level];
@@ -189,7 +259,7 @@
             }}>{model.score}</div>
             <div>
               <div style={{ fontSize: 13, color: "#ccd6f6", fontWeight: 500, marginBottom: 2 }}>{model.name}</div>
-              <div className="mono" style={{ fontSize: 10, color: "#5a6785" }}>{model.provider} · {model.params_b}B params</div>
+              <div className="mono" style={{ fontSize: 10, color: "#5a6785" }}>{model.provider} &middot; {model.params_b}B params</div>
             </div>
             <div className="mono" style={{
               fontSize: 10, padding: "3px 8px", background: fitBg, color: fitColor,
@@ -252,7 +322,7 @@
                 <div className="detail-section-title">System Fit</div>
                 <div className="detail-row">
                   <span className="detail-label">Fit Level:</span>
-                  <span style={{ color: fitColor, fontWeight: 600 }}>● {model.fit_level.charAt(0).toUpperCase() + model.fit_level.slice(1)}</span>
+                  <span style={{ color: fitColor, fontWeight: 600 }}>&#9679; {model.fit_level.charAt(0).toUpperCase() + model.fit_level.slice(1)}</span>
                 </div>
                 <div className="detail-row"><span className="detail-label">Run Mode:</span><span className="detail-value" style={{ fontWeight: 600 }}>{MODE_LABELS[model.run_mode]}</span></div>
 
@@ -266,6 +336,13 @@
                     {model.mem_pct}%
                   </span>
                   <span style={{ color: "#5a6785", marginLeft: 4 }}>({model.mem_gb.toFixed(1)} / {model.available_mem_gb} GB{model.unified_memory ? " unified" : ""})</span>
+                </div>
+
+                {/* Compare button */}
+                <div style={{ marginTop: 16 }}>
+                  <button className="compare-btn" onClick={(e) => { e.stopPropagation(); onCompare(model); }}>
+                    Compare with Hosted API &#8594;
+                  </button>
                 </div>
               </div>
 
@@ -294,12 +371,216 @@
       );
     }
 
+    // === HOSTED MODEL CARD ===
+    function HostedCard({ model, costProfile, onCompareHosted }) {
+      const [expanded, setExpanded] = useState(false);
+      const cost = calcCost(model, costProfile);
+
+      return (
+        <div
+          onClick={() => setExpanded(!expanded)}
+          className="fade-in"
+          style={{
+            background: expanded ? "rgba(255,255,255,0.03)" : "transparent",
+            borderBottom: "1px solid rgba(255,255,255,0.04)",
+            padding: "12px 16px", cursor: "pointer",
+            transition: "background 0.15s ease",
+          }}
+          onMouseEnter={(e) => { if (!expanded) e.currentTarget.style.background = "rgba(255,255,255,0.02)"; }}
+          onMouseLeave={(e) => { if (!expanded) e.currentTarget.style.background = expanded ? "rgba(255,255,255,0.03)" : "transparent"; }}
+        >
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 90px 80px 70px 80px 90px", alignItems: "center", gap: 8 }}>
+            <div>
+              <div style={{ fontSize: 13, color: "#ccd6f6", fontWeight: 500, marginBottom: 2 }}>{model.name}</div>
+              <div className="mono" style={{ fontSize: 10, color: "#5a6785" }}>{model.provider}</div>
+            </div>
+            <div style={{ textAlign: "center" }}><TierBadge tier={model.quality_tier} /></div>
+            <div className="mono" style={{ fontSize: 11, color: "#8892b0", textAlign: "center" }}>{model.throughput_tok_s} t/s</div>
+            <div className="mono" style={{ fontSize: 11, color: "#8892b0", textAlign: "center" }}>{fmtCtx(model.context_window)}</div>
+            <div className="mono" style={{ fontSize: 11, color: "#8892b0", textAlign: "center" }}>{model.ttft_ms}ms</div>
+            <div className="mono" style={{ fontSize: 12, color: "#ffd93d", textAlign: "right", fontWeight: 600 }}>${cost.monthly}/mo</div>
+          </div>
+
+          {expanded && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 32 }}>
+              <div className="mono" style={{ flex: 1 }}>
+                <div className="detail-section-title" style={{ marginTop: 0 }}>Pricing</div>
+                <div className="detail-row"><span className="detail-label">Input:</span><span className="detail-value">${model.pricing.input_per_1m} / 1M tokens</span></div>
+                <div className="detail-row"><span className="detail-label">Output:</span><span className="detail-value">${model.pricing.output_per_1m} / 1M tokens</span></div>
+                <div className="detail-row"><span className="detail-label">Per prompt:</span><span className="detail-value">${cost.per_prompt.toFixed(4)}</span></div>
+                <div className="detail-row"><span className="detail-label">Monthly est:</span><span className="detail-value yellow">${cost.monthly.toFixed(2)}</span></div>
+
+                <div className="detail-section-title">Specs</div>
+                <div className="detail-row"><span className="detail-label">Throughput:</span><span className="detail-value">{model.throughput_tok_s} tok/s</span></div>
+                <div className="detail-row"><span className="detail-label">TTFT:</span><span className="detail-value">{model.ttft_ms} ms</span></div>
+                <div className="detail-row"><span className="detail-label">Context:</span><span className="detail-value">{model.context_window.toLocaleString()} tokens</span></div>
+                <div className="detail-row"><span className="detail-label">Released:</span><span className="detail-value">{model.release_date}</span></div>
+
+                <div className="detail-section-title">Capabilities</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {model.capabilities.map((c) => (
+                    <span key={c} className="mono" style={{
+                      fontSize: 10, padding: "2px 8px", borderRadius: 4,
+                      background: "rgba(255,255,255,0.04)", color: "#8892b0", textTransform: "capitalize",
+                    }}>{c}</span>
+                  ))}
+                </div>
+
+                {model.notes && (
+                  <>
+                    <div className="detail-section-title">Notes</div>
+                    <div style={{ fontSize: 11, color: "#8892b0" }}>{model.notes}</div>
+                  </>
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div className="detail-section-title" style={{ marginTop: 0 }}>Tradeoffs</div>
+                <div className="mono" style={{ fontSize: 10, color: "#8892b0", lineHeight: 1.8 }}>
+                  <div><span style={{ color: "#ff6b6b" }}>&#10005;</span> Data sent to provider</div>
+                  <div><span style={{ color: "#ff6b6b" }}>&#10005;</span> Ongoing cost: ${cost.monthly}/mo</div>
+                  <div><span style={{ color: "#ff6b6b" }}>&#10005;</span> Requires internet</div>
+                  <div><span style={{ color: "#ff6b6b" }}>&#10005;</span> Rate limited</div>
+                  <div><span style={{ color: "#00ff9f" }}>&#10003;</span> No hardware needed</div>
+                  <div><span style={{ color: "#00ff9f" }}>&#10003;</span> Always latest model</div>
+                  <div><span style={{ color: "#00ff9f" }}>&#10003;</span> No setup / maintenance</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // === COMPARE PANEL ===
+    function ComparePanel({ localModel, hostedModel, costProfile, onClose, onPickHosted, hostedModels }) {
+      const cost = calcCost(hostedModel, costProfile);
+      const localWins = (dim) => dim === "local" ? { color: "#00ff9f", fontWeight: 600 } : { color: "#8892b0" };
+      const hostedWins = (dim) => dim === "hosted" ? { color: "#4ecdc4", fontWeight: 600 } : { color: "#8892b0" };
+
+      const speedWinner = localModel.tok_per_sec >= hostedModel.throughput_tok_s ? "local" : "hosted";
+      const costWinner = "local";
+      const privacyWinner = "local";
+      const contextWinner = localModel.context >= hostedModel.context_window ? "local" : "hosted";
+      const latencyWinner = "hosted"; // hosted has no model load time, but TTFT exists. Local is instant after load.
+      const availWinner = "hosted";
+
+      return (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          {/* Compare header */}
+          <div style={{
+            padding: "12px 20px", borderBottom: "1px solid rgba(255,255,255,0.06)",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}>
+            <div className="mono" style={{ fontSize: 12, color: "#ccd6f6" }}>
+              Comparing: <span style={{ color: "#00ff9f" }}>{localModel.name}</span> vs{" "}
+              <select value={hostedModel.id} onChange={(e) => {
+                const h = hostedModels.find(m => m.id === e.target.value);
+                if (h) onPickHosted(h);
+              }} style={{
+                padding: "4px 8px", background: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6,
+                color: "#4ecdc4", fontSize: 12, fontFamily: "'JetBrains Mono', monospace",
+                outline: "none", cursor: "pointer",
+              }}>
+                {hostedModels.map((h) => <option key={h.id} value={h.id} style={{ background: "#0a0f1c" }}>{h.name} ({h.provider})</option>)}
+              </select>
+            </div>
+            <button onClick={onClose} style={{
+              background: "none", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 6,
+              color: "#8892b0", padding: "4px 12px", cursor: "pointer", fontSize: 11,
+              fontFamily: "'JetBrains Mono', monospace",
+            }}>&#10005; Close</button>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px" }}>
+            {/* Side-by-side cards */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 24 }}>
+              {/* Local card */}
+              <div style={{ padding: 16, borderRadius: 10, background: "rgba(0,255,159,0.03)", border: "1px solid rgba(0,255,159,0.1)" }}>
+                <div className="mono" style={{ fontSize: 10, color: "#00ff9f", letterSpacing: 1.5, marginBottom: 10, textTransform: "uppercase" }}>Local Model</div>
+                <div style={{ fontSize: 15, color: "#ccd6f6", fontWeight: 600, marginBottom: 4 }}>{localModel.name}</div>
+                <div className="mono" style={{ fontSize: 10, color: "#5a6785", marginBottom: 10 }}>{localModel.provider} &middot; {localModel.params_b}B &middot; {localModel.quant}</div>
+                <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.8 }}>
+                  <div>Speed: {localModel.tok_per_sec} tok/s</div>
+                  <div>Context: {localModel.context.toLocaleString()} tokens</div>
+                  <div>Memory: {localModel.mem_gb.toFixed(1)} GB ({localModel.run_mode})</div>
+                  <div>Runtime: {localModel.runtime}</div>
+                  <div style={{ color: "#00ff9f", fontWeight: 600, marginTop: 4 }}>Cost: $0/month</div>
+                </div>
+              </div>
+
+              {/* Hosted card */}
+              <div style={{ padding: 16, borderRadius: 10, background: "rgba(78,205,196,0.03)", border: "1px solid rgba(78,205,196,0.1)" }}>
+                <div className="mono" style={{ fontSize: 10, color: "#4ecdc4", letterSpacing: 1.5, marginBottom: 10, textTransform: "uppercase" }}>Hosted API</div>
+                <div style={{ fontSize: 15, color: "#ccd6f6", fontWeight: 600, marginBottom: 4 }}>{hostedModel.name}</div>
+                <div className="mono" style={{ fontSize: 10, color: "#5a6785", marginBottom: 10 }}>{hostedModel.provider} &middot; <TierBadge tier={hostedModel.quality_tier} /></div>
+                <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.8 }}>
+                  <div>Speed: {hostedModel.throughput_tok_s} tok/s</div>
+                  <div>Context: {hostedModel.context_window.toLocaleString()} tokens</div>
+                  <div>TTFT: {hostedModel.ttft_ms} ms</div>
+                  <div>Pricing: ${hostedModel.pricing.input_per_1m}/${hostedModel.pricing.output_per_1m} per 1M tok</div>
+                  <div style={{ color: "#ffd93d", fontWeight: 600, marginTop: 4 }}>Cost: ${cost.monthly}/month</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Dimension comparison table */}
+            <div style={{ borderRadius: 10, overflow: "hidden", border: "1px solid rgba(255,255,255,0.06)" }}>
+              <div className="mono" style={{
+                display: "grid", gridTemplateColumns: "120px 1fr 1fr",
+                padding: "8px 16px", gap: 8, fontSize: 9, color: "#5a6785",
+                letterSpacing: 1.2, textTransform: "uppercase", background: "rgba(255,255,255,0.02)",
+                borderBottom: "1px solid rgba(255,255,255,0.06)",
+              }}>
+                <div>Dimension</div><div>Local</div><div>Hosted</div>
+              </div>
+              {[
+                { dim: "Speed",   local: `${localModel.tok_per_sec} tok/s`, hosted: `${hostedModel.throughput_tok_s} tok/s`, winner: speedWinner },
+                { dim: "Cost",    local: "$0 / month", hosted: `$${cost.monthly} / month`, winner: costWinner },
+                { dim: "Privacy", local: "Full (on-device)", hosted: "Data sent to provider", winner: privacyWinner },
+                { dim: "Context", local: fmtCtx(localModel.context), hosted: fmtCtx(hostedModel.context_window), winner: contextWinner },
+                { dim: "Offline", local: "Yes", hosted: "No", winner: "local" },
+                { dim: "Setup",   local: "Download + runtime", hosted: "API key only", winner: availWinner },
+                { dim: "Latency", local: "~0ms (after load)", hosted: `${hostedModel.ttft_ms}ms TTFT`, winner: "local" },
+              ].map((row) => (
+                <div key={row.dim} className="mono" style={{
+                  display: "grid", gridTemplateColumns: "120px 1fr 1fr",
+                  padding: "8px 16px", gap: 8, fontSize: 11,
+                  borderBottom: "1px solid rgba(255,255,255,0.03)",
+                }}>
+                  <div style={{ color: "#5a6785" }}>{row.dim}</div>
+                  <div style={localWins(row.winner)}>{row.local}</div>
+                  <div style={hostedWins(row.winner)}>{row.hosted}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Cost projection */}
+            <div style={{ marginTop: 24, padding: 16, borderRadius: 10, background: "rgba(255,217,61,0.03)", border: "1px solid rgba(255,217,61,0.1)" }}>
+              <div className="mono" style={{ fontSize: 10, color: "#ffd93d", letterSpacing: 1.5, marginBottom: 10, textTransform: "uppercase" }}>Cost Projection</div>
+              <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.8 }}>
+                <div>At your usage ({costProfile.prompts_per_day} prompts/day):</div>
+                <div style={{ marginTop: 4 }}>
+                  <span style={{ color: "#00ff9f" }}>{hostedModel.name}</span> costs{" "}
+                  <span style={{ color: "#ffd93d", fontWeight: 600 }}>${cost.monthly}/month</span> ({" "}
+                  <span>${(cost.monthly * 12).toFixed(0)}/year</span>)
+                </div>
+                <div>Running <span style={{ color: "#00ff9f" }}>{localModel.name}</span> locally is <span style={{ color: "#00ff9f", fontWeight: 600 }}>free</span> after hardware cost</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // === APP ===
     function App() {
+      const [activeTab, setActiveTab]     = useState("local");
       const [platform, setPlatform]       = useState("apple");
-      const [chipIdx, setChipIdx]         = useState(11); // M4
+      const [chipIdx, setChipIdx]         = useState(11);
       const [memIdx, setMemIdx]           = useState(0);
       const [cpuIdx, setCpuIdx]           = useState(0);
-      const [gpuIdx, setGpuIdx]           = useState(12); // RTX 4090
+      const [gpuIdx, setGpuIdx]           = useState(12);
       const [x86Ram, setX86Ram]           = useState(64);
       const [filterFit, setFilterFit]             = useState("all");
       const [filterUseCase, setFilterUseCase]     = useState("all");
@@ -309,7 +590,18 @@
       const [totalModels, setTotalModels] = useState(0);
       const [loading, setLoading]         = useState(false);
       const [sidebarOpen, setSidebarOpen] = useState(true);
+      const [hostedModels, setHostedModels] = useState([]);
+      const [costProfile, setCostProfile] = useState({ prompts_per_day: 100, avg_input_tokens: 500, avg_output_tokens: 1000 });
+      const [compareLocal, setCompareLocal] = useState(null);
+      const [compareHosted, setCompareHosted] = useState(null);
+      const [hostedSearch, setHostedSearch] = useState("");
+      const [hostedTierFilter, setHostedTierFilter] = useState("all");
       const debounceRef = useRef(null);
+
+      // Fetch hosted models once
+      useEffect(() => {
+        fetchHosted().then((data) => setHostedModels(data.models || []));
+      }, []);
 
       // Derived hardware specs
       const getSpecs = useCallback(() => {
@@ -317,21 +609,15 @@
           const chip = APPLE_CHIPS[chipIdx];
           const mem = chip.mem_options[memIdx] || chip.mem_options[0];
           return {
-            ram_gb: mem,
-            vram_gb: mem,
-            cpu_cores: chip.cores,
-            backend: "metal",
-            bandwidth_gb_s: chip.bandwidth,
-            unified_memory: true,
+            ram_gb: mem, vram_gb: mem, cpu_cores: chip.cores,
+            backend: "metal", bandwidth_gb_s: chip.bandwidth, unified_memory: true,
           };
         } else {
           const cpu = X86_CPUS[cpuIdx];
           const gpu = GPUS[gpuIdx];
           const isCpuOnly = gpu.vram === 0;
           return {
-            ram_gb: x86Ram,
-            vram_gb: gpu.vram,
-            cpu_cores: cpu.cores,
+            ram_gb: x86Ram, vram_gb: gpu.vram, cpu_cores: cpu.cores,
             backend: isCpuOnly ? "cpu_x86" : "cuda",
             bandwidth_gb_s: isCpuOnly ? cpu.bandwidth : gpu.bandwidth,
             unified_memory: false,
@@ -341,12 +627,9 @@
 
       const doFetch = useCallback(() => {
         setLoading(true);
-        const specs = getSpecs();
-        fetchScores(specs, {
-          fit_filter: filterFit,
-          use_case_filter: filterUseCase,
-          search: search || undefined,
-          sort_by: sortBy,
+        fetchScores(getSpecs(), {
+          fit_filter: filterFit, use_case_filter: filterUseCase,
+          search: search || undefined, sort_by: sortBy,
         }).then((data) => {
           setResults(data.results || []);
           setTotalModels(data.total_models || 0);
@@ -360,40 +643,63 @@
         return () => clearTimeout(debounceRef.current);
       }, [doFetch]);
 
-      // Reset memory index when chip changes
       useEffect(() => { setMemIdx(0); }, [chipIdx]);
 
-      const specs = getSpecs();
-      const runnable = results.filter((r) => r.fit_level !== "too_tight").length;
+      const handleCompare = useCallback((localModel) => {
+        const matches = findComparableHosted(localModel, hostedModels);
+        setCompareLocal(localModel);
+        setCompareHosted(matches[0] || hostedModels[0]);
+        setActiveTab("compare");
+      }, [hostedModels]);
 
+      const runnable = results.filter((r) => r.fit_level !== "too_tight").length;
       const currentChip = APPLE_CHIPS[chipIdx];
       const currentCpu = X86_CPUS[cpuIdx];
       const currentGpu = GPUS[gpuIdx];
 
+      const filteredHosted = useMemo(() => {
+        let h = hostedModels;
+        if (hostedTierFilter !== "all") h = h.filter((m) => m.quality_tier === hostedTierFilter);
+        if (hostedSearch) {
+          const q = hostedSearch.toLowerCase();
+          h = h.filter((m) => m.name.toLowerCase().includes(q) || m.provider.toLowerCase().includes(q));
+        }
+        return h;
+      }, [hostedModels, hostedTierFilter, hostedSearch]);
+
       return (
         <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
           {/* Header */}
-          <div style={{
-            borderBottom: "1px solid rgba(255,255,255,0.06)", padding: "16px 24px",
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{
-                background: "none", border: "none", color: "#8892b0", fontSize: 18,
-                cursor: "pointer", padding: "2px 6px", lineHeight: 1,
-              }}>&#9776;</button>
-              <div style={{
-                width: 30, height: 30, borderRadius: 8,
-                background: "linear-gradient(135deg, #00ff9f 0%, #06b6d4 100%)",
-                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15,
-              }}><span style={{ color: "#0a0f1c" }}>&#9889;</span></div>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 600, color: "#e2e8f0", letterSpacing: -0.3 }}>llmfit</div>
-                <div className="mono" style={{ fontSize: 9, color: "#5a6785", letterSpacing: 1 }}>HARDWARE-AWARE MODEL FINDER</div>
+          <div style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", padding: "12px 24px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{
+                  background: "none", border: "none", color: "#8892b0", fontSize: 18,
+                  cursor: "pointer", padding: "2px 6px", lineHeight: 1,
+                }}>&#9776;</button>
+                <div style={{
+                  width: 30, height: 30, borderRadius: 8,
+                  background: "linear-gradient(135deg, #00ff9f 0%, #06b6d4 100%)",
+                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15,
+                }}><span style={{ color: "#0a0f1c" }}>&#9889;</span></div>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: "#e2e8f0", letterSpacing: -0.3 }}>llmfit</div>
+                  <div className="mono" style={{ fontSize: 9, color: "#5a6785", letterSpacing: 1 }}>HARDWARE-AWARE MODEL FINDER</div>
+                </div>
+              </div>
+              <div className="mono" style={{ fontSize: 11, color: "#5a6785" }}>
+                {totalModels} models &middot; Powered by <a href="https://github.com/AlexsJones/llmfit" target="_blank" rel="noopener" style={{ color: "#4ecdc4", textDecoration: "none" }}>llmfit</a>
               </div>
             </div>
-            <div className="mono" style={{ fontSize: 11, color: "#5a6785" }}>
-              {totalModels} models &middot; Powered by <a href="https://github.com/AlexsJones/llmfit" target="_blank" rel="noopener" style={{ color: "#4ecdc4", textDecoration: "none" }}>llmfit</a>
+            {/* Tabs */}
+            <div style={{ display: "flex", gap: 4, borderTop: "1px solid rgba(255,255,255,0.04)", paddingTop: 8 }}>
+              <button className={`tab-btn ${activeTab === "local" ? "active" : ""}`} onClick={() => setActiveTab("local")}>Local Models</button>
+              <button className={`tab-btn ${activeTab === "hosted" ? "active" : ""}`} onClick={() => setActiveTab("hosted")}>Hosted APIs</button>
+              <button
+                className={`tab-btn ${activeTab === "compare" ? "active" : ""}`}
+                onClick={() => { if (compareLocal) setActiveTab("compare"); }}
+                style={{ opacity: compareLocal ? 1 : 0.4, cursor: compareLocal ? "pointer" : "default" }}
+              >Compare</button>
             </div>
           </div>
 
@@ -405,178 +711,272 @@
                 padding: 24, overflowY: "auto", flexShrink: 0,
                 background: "rgba(255,255,255,0.01)",
               }}>
-                <div className="mono" style={{ fontSize: 10, color: "#00ff9f", letterSpacing: 2, marginBottom: 20, textTransform: "uppercase" }}>
-                  &#9654; Your Hardware
-                </div>
-
-                {/* Platform toggle */}
-                <div style={{ display: "flex", marginBottom: 20 }}>
-                  <button className={`platform-btn ${platform === "apple" ? "active" : ""}`}
-                    onClick={() => setPlatform("apple")}>Apple Silicon</button>
-                  <button className={`platform-btn ${platform === "x86" ? "active" : ""}`}
-                    onClick={() => setPlatform("x86")}>x86 / PC</button>
-                </div>
-
-                {platform === "apple" ? (
+                {activeTab === "hosted" ? (
                   <>
-                    {/* Chip selector */}
-                    <label className="section-label">Chip</label>
-                    <select className="hw-select" value={chipIdx}
-                      onChange={(e) => setChipIdx(Number(e.target.value))}
-                      style={{ marginBottom: 16 }}>
-                      {APPLE_CHIPS.map((c, i) => (
-                        <option key={c.chip} value={i}>Apple {c.chip}</option>
-                      ))}
-                    </select>
+                    {/* Cost calculator sidebar */}
+                    <div className="mono" style={{ fontSize: 10, color: "#ffd93d", letterSpacing: 2, marginBottom: 20, textTransform: "uppercase" }}>
+                      &#9654; Usage Profile
+                    </div>
+                    <label className="section-label">Prompts / Day</label>
+                    <input type="number" className="cost-input" value={costProfile.prompts_per_day}
+                      onChange={(e) => setCostProfile({...costProfile, prompts_per_day: Math.max(1, Number(e.target.value))})}
+                      style={{ marginBottom: 14 }} />
+                    <label className="section-label">Avg Input Tokens</label>
+                    <input type="number" className="cost-input" value={costProfile.avg_input_tokens}
+                      onChange={(e) => setCostProfile({...costProfile, avg_input_tokens: Math.max(1, Number(e.target.value))})}
+                      style={{ marginBottom: 14 }} />
+                    <label className="section-label">Avg Output Tokens</label>
+                    <input type="number" className="cost-input" value={costProfile.avg_output_tokens}
+                      onChange={(e) => setCostProfile({...costProfile, avg_output_tokens: Math.max(1, Number(e.target.value))})}
+                      style={{ marginBottom: 20 }} />
 
-                    {/* Memory selector */}
-                    <label className="section-label">Unified Memory</label>
-                    <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
-                      {currentChip.mem_options.map((m, i) => (
-                        <button key={m} className={`ram-btn ${memIdx === i ? "active" : ""}`}
-                          onClick={() => setMemIdx(i)}>{m} GB</button>
-                      ))}
+                    <div style={{
+                      padding: 14, borderRadius: 10,
+                      background: "rgba(255,217,61,0.03)", border: "1px solid rgba(255,217,61,0.08)",
+                    }}>
+                      <div className="mono" style={{ fontSize: 10, color: "#ffd93d", letterSpacing: 1.5, marginBottom: 8, textTransform: "uppercase" }}>Monthly Tokens</div>
+                      <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.9 }}>
+                        <div>{(costProfile.prompts_per_day * costProfile.avg_input_tokens * 30).toLocaleString()} input</div>
+                        <div>{(costProfile.prompts_per_day * costProfile.avg_output_tokens * 30).toLocaleString()} output</div>
+                        <div style={{ marginTop: 6, color: "#00ff9f", fontWeight: 600 }}>Local: always $0</div>
+                      </div>
                     </div>
                   </>
                 ) : (
                   <>
-                    {/* CPU selector */}
-                    <label className="section-label">Processor</label>
-                    <select className="hw-select" value={cpuIdx}
-                      onChange={(e) => setCpuIdx(Number(e.target.value))}
-                      style={{ marginBottom: 16 }}>
-                      {X86_CPUS.map((c, i) => (
-                        <option key={c.name} value={i}>{c.name}</option>
-                      ))}
-                    </select>
-
-                    {/* RAM selector */}
-                    <label className="section-label">System RAM</label>
-                    <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
-                      {X86_RAM_OPTIONS.map((r) => (
-                        <button key={r} className={`ram-btn ${x86Ram === r ? "active" : ""}`}
-                          onClick={() => setX86Ram(r)}>{r} GB</button>
-                      ))}
+                    {/* Hardware selector sidebar */}
+                    <div className="mono" style={{ fontSize: 10, color: "#00ff9f", letterSpacing: 2, marginBottom: 20, textTransform: "uppercase" }}>
+                      &#9654; Your Hardware
+                    </div>
+                    <div style={{ display: "flex", marginBottom: 20 }}>
+                      <button className={`platform-btn ${platform === "apple" ? "active" : ""}`}
+                        onClick={() => setPlatform("apple")}>Apple Silicon</button>
+                      <button className={`platform-btn ${platform === "x86" ? "active" : ""}`}
+                        onClick={() => setPlatform("x86")}>x86 / PC</button>
                     </div>
 
-                    {/* GPU selector */}
-                    <label className="section-label">GPU</label>
-                    <select className="hw-select" value={gpuIdx}
-                      onChange={(e) => setGpuIdx(Number(e.target.value))}
-                      style={{ marginBottom: 20 }}>
-                      {GPUS.map((g, i) => (
-                        <option key={g.name} value={i}>{g.name}</option>
-                      ))}
-                    </select>
-                  </>
-                )}
-
-                {/* System Profile */}
-                <div style={{
-                  padding: 14, borderRadius: 10,
-                  background: "rgba(0,255,159,0.03)", border: "1px solid rgba(0,255,159,0.08)",
-                }}>
-                  <div className="mono" style={{ fontSize: 10, color: "#00ff9f", letterSpacing: 1.5, marginBottom: 8, textTransform: "uppercase" }}>System Profile</div>
-                  <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.9 }}>
                     {platform === "apple" ? (
                       <>
-                        <div>Apple {currentChip.chip} ({currentChip.cores} CPU + {currentChip.gpu_cores} GPU cores)</div>
-                        <div>{currentChip.mem_options[memIdx] || currentChip.mem_options[0]} GB unified memory</div>
-                        <div>{currentChip.bandwidth} GB/s bandwidth</div>
-                        <div style={{ fontSize: 10, color: "#5a6785" }}>Runtime: MLX</div>
+                        <label className="section-label">Chip</label>
+                        <select className="hw-select" value={chipIdx}
+                          onChange={(e) => setChipIdx(Number(e.target.value))}
+                          style={{ marginBottom: 16 }}>
+                          {APPLE_CHIPS.map((c, i) => (
+                            <option key={c.chip} value={i}>Apple {c.chip}</option>
+                          ))}
+                        </select>
+                        <label className="section-label">Unified Memory</label>
+                        <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
+                          {currentChip.mem_options.map((m, i) => (
+                            <button key={m} className={`ram-btn ${memIdx === i ? "active" : ""}`}
+                              onClick={() => setMemIdx(i)}>{m} GB</button>
+                          ))}
+                        </div>
                       </>
                     ) : (
                       <>
-                        <div>{currentCpu.name} ({currentCpu.cores} cores)</div>
-                        <div>{x86Ram} GB RAM</div>
-                        <div>{currentGpu.vram > 0 ? `${currentGpu.name} · ${currentGpu.bandwidth} GB/s` : "No GPU (CPU only)"}</div>
-                        <div style={{ fontSize: 10, color: "#5a6785" }}>Runtime: llama.cpp ({currentGpu.vram > 0 ? "CUDA" : "CPU"})</div>
+                        <label className="section-label">Processor</label>
+                        <select className="hw-select" value={cpuIdx}
+                          onChange={(e) => setCpuIdx(Number(e.target.value))}
+                          style={{ marginBottom: 16 }}>
+                          {X86_CPUS.map((c, i) => (
+                            <option key={c.name} value={i}>{c.name}</option>
+                          ))}
+                        </select>
+                        <label className="section-label">System RAM</label>
+                        <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+                          {X86_RAM_OPTIONS.map((r) => (
+                            <button key={r} className={`ram-btn ${x86Ram === r ? "active" : ""}`}
+                              onClick={() => setX86Ram(r)}>{r} GB</button>
+                          ))}
+                        </div>
+                        <label className="section-label">GPU</label>
+                        <select className="hw-select" value={gpuIdx}
+                          onChange={(e) => setGpuIdx(Number(e.target.value))}
+                          style={{ marginBottom: 20 }}>
+                          {GPUS.map((g, i) => (
+                            <option key={g.name} value={i}>{g.name}</option>
+                          ))}
+                        </select>
                       </>
                     )}
-                    <div style={{ marginTop: 6, color: "#00ff9f", fontWeight: 600 }}>{runnable} runnable models</div>
-                  </div>
-                </div>
+
+                    <div style={{
+                      padding: 14, borderRadius: 10,
+                      background: "rgba(0,255,159,0.03)", border: "1px solid rgba(0,255,159,0.08)",
+                    }}>
+                      <div className="mono" style={{ fontSize: 10, color: "#00ff9f", letterSpacing: 1.5, marginBottom: 8, textTransform: "uppercase" }}>System Profile</div>
+                      <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.9 }}>
+                        {platform === "apple" ? (
+                          <>
+                            <div>Apple {currentChip.chip} ({currentChip.cores} CPU + {currentChip.gpu_cores} GPU cores)</div>
+                            <div>{currentChip.mem_options[memIdx] || currentChip.mem_options[0]} GB unified memory</div>
+                            <div>{currentChip.bandwidth} GB/s bandwidth</div>
+                            <div style={{ fontSize: 10, color: "#5a6785" }}>Runtime: MLX</div>
+                          </>
+                        ) : (
+                          <>
+                            <div>{currentCpu.name} ({currentCpu.cores} cores)</div>
+                            <div>{x86Ram} GB RAM</div>
+                            <div>{currentGpu.vram > 0 ? `${currentGpu.name} \u00b7 ${currentGpu.bandwidth} GB/s` : "No GPU (CPU only)"}</div>
+                            <div style={{ fontSize: 10, color: "#5a6785" }}>Runtime: llama.cpp ({currentGpu.vram > 0 ? "CUDA" : "CPU"})</div>
+                          </>
+                        )}
+                        <div style={{ marginTop: 6, color: "#00ff9f", fontWeight: 600 }}>{runnable} runnable models</div>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
-            {/* Main */}
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
-              {/* Toolbar */}
-              <div style={{
-                padding: "12px 20px", borderBottom: "1px solid rgba(255,255,255,0.06)",
-                display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
-              }}>
-                <div style={{ position: "relative", flex: 1, minWidth: 180 }}>
-                  <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#5a6785", fontSize: 13 }}>&#8981;</span>
-                  <input type="text" placeholder="Search models, providers..." value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    style={{
-                      width: "100%", padding: "7px 12px 7px 30px",
-                      background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
-                      borderRadius: 8, color: "#ccd6f6", fontSize: 12, outline: "none",
-                      fontFamily: "'JetBrains Mono', monospace",
-                    }}
-                  />
-                </div>
-
-                {[
-                  { label: "Fit", value: filterFit, setter: setFilterFit, opts: ["all", "perfect", "good", "marginal"] },
-                  { label: "Use Case", value: filterUseCase, setter: setFilterUseCase, opts: ["all", "general", "coding", "reasoning", "chat", "embedding", "multimodal"] },
-                  { label: "Sort", value: sortBy, setter: setSortBy, opts: [["score","Score"],["params","Params"],["speed","Speed"],["mem","Memory"]] },
-                ].map((f) => (
-                  <select key={f.label} value={f.value} onChange={(e) => f.setter(e.target.value)} style={{
+            {/* Main content area */}
+            {activeTab === "compare" && compareLocal && compareHosted ? (
+              <ComparePanel
+                localModel={compareLocal}
+                hostedModel={compareHosted}
+                costProfile={costProfile}
+                hostedModels={hostedModels}
+                onClose={() => setActiveTab("local")}
+                onPickHosted={setCompareHosted}
+              />
+            ) : activeTab === "hosted" ? (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+                {/* Hosted toolbar */}
+                <div style={{
+                  padding: "12px 20px", borderBottom: "1px solid rgba(255,255,255,0.06)",
+                  display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+                }}>
+                  <div style={{ position: "relative", flex: 1, minWidth: 180 }}>
+                    <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#5a6785", fontSize: 13 }}>&#8981;</span>
+                    <input type="text" placeholder="Search hosted models..." value={hostedSearch}
+                      onChange={(e) => setHostedSearch(e.target.value)}
+                      style={{
+                        width: "100%", padding: "7px 12px 7px 30px",
+                        background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
+                        borderRadius: 8, color: "#ccd6f6", fontSize: 12, outline: "none",
+                        fontFamily: "'JetBrains Mono', monospace",
+                      }}
+                    />
+                  </div>
+                  <select value={hostedTierFilter} onChange={(e) => setHostedTierFilter(e.target.value)} style={{
                     padding: "7px 10px", background: "rgba(255,255,255,0.04)",
                     border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8,
                     color: "#8892b0", fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
                     outline: "none", cursor: "pointer",
                   }}>
-                    {f.opts.map((o) => {
-                      const [val, lbl] = Array.isArray(o) ? o : [o, o];
-                      return <option key={val} value={val} style={{ background: "#0a0f1c", textTransform: "capitalize" }}>{f.label}: {lbl}</option>;
-                    })}
+                    {["all", "frontier", "strong", "mid", "budget"].map((t) => (
+                      <option key={t} value={t} style={{ background: "#0a0f1c", textTransform: "capitalize" }}>Tier: {t}</option>
+                    ))}
                   </select>
-                ))}
+                </div>
 
-                {loading && (
-                  <div style={{ width: 16, height: 16, border: "2px solid rgba(0,255,159,0.2)", borderTop: "2px solid #00ff9f", borderRadius: "50%", animation: "spin 0.6s linear infinite" }} />
-                )}
+                {/* Hosted table header */}
+                <div className="mono" style={{
+                  display: "grid", gridTemplateColumns: "1fr 90px 80px 70px 80px 90px",
+                  padding: "8px 16px", gap: 8,
+                  borderBottom: "1px solid rgba(255,255,255,0.06)",
+                  fontSize: 9, color: "#5a6785", letterSpacing: 1.2, textTransform: "uppercase",
+                }}>
+                  <div>Model</div>
+                  <div style={{ textAlign: "center" }}>Tier</div>
+                  <div style={{ textAlign: "center" }}>Speed</div>
+                  <div style={{ textAlign: "center" }}>Context</div>
+                  <div style={{ textAlign: "center" }}>TTFT</div>
+                  <div style={{ textAlign: "right" }}>Cost/mo</div>
+                </div>
+
+                {/* Hosted results */}
+                <div style={{ flex: 1, overflowY: "auto" }}>
+                  {filteredHosted.map((m) => (
+                    <HostedCard key={m.id} model={m} costProfile={costProfile} />
+                  ))}
+                </div>
+
+                <div className="mono" style={{
+                  padding: "10px 20px", borderTop: "1px solid rgba(255,255,255,0.06)",
+                  fontSize: 10, color: "#3d4663", display: "flex", justifyContent: "space-between",
+                }}>
+                  <span>Showing {filteredHosted.length} hosted models &middot; Prices as of March 2025</span>
+                  <span>Click any row for details</span>
+                </div>
               </div>
-
-              {/* Table header */}
-              <div className="mono" style={{
-                display: "grid", gridTemplateColumns: "50px 1fr 90px 70px 65px 70px 80px 70px",
-                padding: "8px 16px", gap: 8,
-                borderBottom: "1px solid rgba(255,255,255,0.06)",
-                fontSize: 9, color: "#5a6785", letterSpacing: 1.2, textTransform: "uppercase",
-              }}>
-                <div>Score</div><div>Model</div><div style={{ textAlign: "center" }}>Fit</div>
-                <div style={{ textAlign: "center" }}>Quant</div><div style={{ textAlign: "center" }}>Mode</div>
-                <div style={{ textAlign: "center" }}>Mem</div><div style={{ textAlign: "center" }}>Speed</div>
-                <div style={{ textAlign: "center" }}>Use</div>
-              </div>
-
-              {/* Results */}
-              <div style={{ flex: 1, overflowY: "auto" }}>
-                {results.length === 0 && !loading ? (
-                  <div style={{ padding: 48, textAlign: "center", color: "#5a6785" }}>
-                    <div style={{ fontSize: 32, marginBottom: 12 }}>&empty;</div>
-                    <div className="mono" style={{ fontSize: 12 }}>No models match your criteria</div>
-                    <div style={{ fontSize: 11, marginTop: 4, color: "#3d4663" }}>Try adjusting your hardware specs or relaxing filters</div>
+            ) : (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+                {/* Local toolbar */}
+                <div style={{
+                  padding: "12px 20px", borderBottom: "1px solid rgba(255,255,255,0.06)",
+                  display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
+                }}>
+                  <div style={{ position: "relative", flex: 1, minWidth: 180 }}>
+                    <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#5a6785", fontSize: 13 }}>&#8981;</span>
+                    <input type="text" placeholder="Search models, providers..." value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      style={{
+                        width: "100%", padding: "7px 12px 7px 30px",
+                        background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)",
+                        borderRadius: 8, color: "#ccd6f6", fontSize: 12, outline: "none",
+                        fontFamily: "'JetBrains Mono', monospace",
+                      }}
+                    />
                   </div>
-                ) : (
-                  results.map((m, i) => <ModelRow key={`${m.name}-${m.provider}`} model={m} index={i} />)
-                )}
-              </div>
+                  {[
+                    { label: "Fit", value: filterFit, setter: setFilterFit, opts: ["all", "perfect", "good", "marginal"] },
+                    { label: "Use Case", value: filterUseCase, setter: setFilterUseCase, opts: ["all", "general", "coding", "reasoning", "chat", "embedding", "multimodal"] },
+                    { label: "Sort", value: sortBy, setter: setSortBy, opts: [["score","Score"],["params","Params"],["speed","Speed"],["mem","Memory"]] },
+                  ].map((f) => (
+                    <select key={f.label} value={f.value} onChange={(e) => f.setter(e.target.value)} style={{
+                      padding: "7px 10px", background: "rgba(255,255,255,0.04)",
+                      border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8,
+                      color: "#8892b0", fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+                      outline: "none", cursor: "pointer",
+                    }}>
+                      {f.opts.map((o) => {
+                        const [val, lbl] = Array.isArray(o) ? o : [o, o];
+                        return <option key={val} value={val} style={{ background: "#0a0f1c", textTransform: "capitalize" }}>{f.label}: {lbl}</option>;
+                      })}
+                    </select>
+                  ))}
+                  {loading && (
+                    <div style={{ width: 16, height: 16, border: "2px solid rgba(0,255,159,0.2)", borderTop: "2px solid #00ff9f", borderRadius: "50%", animation: "spin 0.6s linear infinite" }} />
+                  )}
+                </div>
 
-              {/* Footer */}
-              <div className="mono" style={{
-                padding: "10px 20px", borderTop: "1px solid rgba(255,255,255,0.06)",
-                fontSize: 10, color: "#3d4663", display: "flex", justifyContent: "space-between",
-              }}>
-                <span>Showing {results.length} models &middot; Click any row for details</span>
-                <span>Scoring engine based on llmfit formulas</span>
+                {/* Table header */}
+                <div className="mono" style={{
+                  display: "grid", gridTemplateColumns: "50px 1fr 90px 70px 65px 70px 80px 70px",
+                  padding: "8px 16px", gap: 8,
+                  borderBottom: "1px solid rgba(255,255,255,0.06)",
+                  fontSize: 9, color: "#5a6785", letterSpacing: 1.2, textTransform: "uppercase",
+                }}>
+                  <div>Score</div><div>Model</div><div style={{ textAlign: "center" }}>Fit</div>
+                  <div style={{ textAlign: "center" }}>Quant</div><div style={{ textAlign: "center" }}>Mode</div>
+                  <div style={{ textAlign: "center" }}>Mem</div><div style={{ textAlign: "center" }}>Speed</div>
+                  <div style={{ textAlign: "center" }}>Use</div>
+                </div>
+
+                {/* Results */}
+                <div style={{ flex: 1, overflowY: "auto" }}>
+                  {results.length === 0 && !loading ? (
+                    <div style={{ padding: 48, textAlign: "center", color: "#5a6785" }}>
+                      <div style={{ fontSize: 32, marginBottom: 12 }}>&empty;</div>
+                      <div className="mono" style={{ fontSize: 12 }}>No models match your criteria</div>
+                      <div style={{ fontSize: 11, marginTop: 4, color: "#3d4663" }}>Try adjusting your hardware specs or relaxing filters</div>
+                    </div>
+                  ) : (
+                    results.map((m, i) => <ModelRow key={`${m.name}-${m.provider}`} model={m} index={i} onCompare={handleCompare} />)
+                  )}
+                </div>
+
+                <div className="mono" style={{
+                  padding: "10px 20px", borderTop: "1px solid rgba(255,255,255,0.06)",
+                  fontSize: 10, color: "#3d4663", display: "flex", justifyContent: "space-between",
+                }}>
+                  <span>Showing {results.length} models &middot; Click any row for details</span>
+                  <span>Scoring engine based on llmfit formulas</span>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       );

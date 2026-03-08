@@ -2,6 +2,7 @@ const express = require("express");
 const path = require("path");
 const { loadModels } = require("./src/models");
 const { scoreAllModels } = require("./src/scoring");
+const { HOSTED_MODELS, calculateMonthlyCost } = require("./src/hosted");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -73,6 +74,32 @@ app.post("/api/score", (req, res) => {
     matched: results.length,
     results,
   });
+});
+
+// Hosted LLM reference data
+app.get("/api/hosted", (_req, res) => {
+  res.json({ count: HOSTED_MODELS.length, models: HOSTED_MODELS });
+});
+
+// Cost calculator for hosted models
+app.post("/api/hosted/calculate", (req, res) => {
+  const {
+    prompts_per_day = 100,
+    avg_input_tokens = 500,
+    avg_output_tokens = 1000,
+  } = req.body;
+
+  const profile = { prompts_per_day, avg_input_tokens, avg_output_tokens };
+  const costs = HOSTED_MODELS.map((m) => ({
+    model_id: m.id,
+    name: m.name,
+    provider: m.provider,
+    quality_tier: m.quality_tier,
+    ...calculateMonthlyCost(m, profile),
+  }));
+  costs.sort((a, b) => a.monthly_cost - b.monthly_cost);
+
+  res.json({ profile, costs });
 });
 
 // Catch-all: serve index.html for SPA routing
