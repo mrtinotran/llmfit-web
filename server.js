@@ -51,6 +51,8 @@ app.post("/api/score", (req, res) => {
     vram_gb = 0,
     cpu_cores = 4,
     backend = "cpu_x86",
+    bandwidth_gb_s,
+    unified_memory = false,
     fit_filter,
     use_case_filter,
     search,
@@ -62,7 +64,7 @@ app.post("/api/score", (req, res) => {
   if (ram_gb < 1 || ram_gb > 2048) return res.status(400).json({ error: "ram_gb must be 1-2048" });
   if (vram_gb < 0 || vram_gb > 512) return res.status(400).json({ error: "vram_gb must be 0-512" });
 
-  const specs = { ram_gb, vram_gb, cpu_cores, backend };
+  const specs = { ram_gb, vram_gb, cpu_cores, backend, bandwidth_gb_s, unified_memory };
   const results = scoreAllModels(models, specs, { fit_filter, use_case_filter, search, sort_by, limit });
 
   res.json({

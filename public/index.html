@@ -14,14 +14,52 @@
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
-    input[type="range"] { -webkit-appearance: none; appearance: none; background: rgba(255,255,255,0.06); border-radius: 3px; outline: none; height: 6px; width: 100%; cursor: pointer; }
-    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #00ff9f; cursor: pointer; box-shadow: 0 0 10px rgba(0,255,159,0.4); }
-    input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #00ff9f; cursor: pointer; border: none; }
     select { -webkit-appearance: none; appearance: none; }
     @keyframes fadeSlideIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes spin { to { transform: rotate(360deg); } }
     .mono { font-family: 'JetBrains Mono', monospace; }
     .fade-in { animation: fadeSlideIn 0.3s ease both; }
+    .hw-select {
+      width: 100%; padding: 8px 12px; background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;
+      color: #ccd6f6; font-size: 12px; font-family: 'JetBrains Mono', monospace;
+      outline: none; cursor: pointer;
+    }
+    .hw-select option { background: #0a0f1c; }
+    .section-label {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #5a6785;
+      letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px; display: block;
+    }
+    .platform-btn {
+      flex: 1; padding: 8px 0; border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03); color: #8892b0; font-size: 11px;
+      font-family: 'JetBrains Mono', monospace; cursor: pointer; transition: all 0.15s ease;
+      text-align: center;
+    }
+    .platform-btn.active {
+      background: rgba(0,255,159,0.1); border-color: #00ff9f; color: #00ff9f;
+    }
+    .platform-btn:first-child { border-radius: 8px 0 0 8px; }
+    .platform-btn:last-child { border-radius: 0 8px 8px 0; }
+    .detail-section-title {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #00ff9f;
+      letter-spacing: 1.5px; text-transform: uppercase; margin: 14px 0 8px; padding-bottom: 4px;
+      border-bottom: 1px solid rgba(0,255,159,0.1);
+    }
+    .detail-section-title:first-child { margin-top: 0; }
+    .detail-row { display: flex; gap: 8px; margin-bottom: 3px; font-size: 11px; line-height: 1.6; }
+    .detail-label { color: #5a6785; min-width: 110px; flex-shrink: 0; }
+    .detail-value { color: #ccd6f6; }
+    .detail-value.green { color: #00ff9f; }
+    .detail-value.cyan { color: #4ecdc4; }
+    .detail-value.yellow { color: #ffd93d; }
+    .ram-btn {
+      padding: 4px 10px; border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.03); color: #8892b0; font-size: 11px;
+      font-family: 'JetBrains Mono', monospace; cursor: pointer; border-radius: 6px;
+      transition: all 0.15s ease;
+    }
+    .ram-btn.active { background: rgba(0,255,159,0.15); border-color: #00ff9f; color: #00ff9f; }
   </style>
 </head>
 <body>
@@ -38,14 +76,69 @@
     const FIT_BG    = { perfect: "rgba(0,255,159,0.08)", good: "rgba(78,205,196,0.08)", marginal: "rgba(255,217,61,0.08)", too_tight: "rgba(255,107,107,0.08)" };
     const MODE_LABELS = { gpu: "GPU", "cpu+gpu": "CPU+GPU", cpu: "CPU", moe: "MoE" };
 
-    const BACKENDS = [
-      { value: "cuda",    label: "NVIDIA (CUDA)" },
-      { value: "rocm",    label: "AMD (ROCm)" },
-      { value: "metal",   label: "Apple Silicon" },
-      { value: "sycl",    label: "Intel (SYCL)" },
-      { value: "cpu_arm", label: "CPU only (ARM)" },
-      { value: "cpu_x86", label: "CPU only (x86)" },
+    const USE_CASE_LABELS = {
+      coding: "Code generation and completion",
+      chat: "Conversational AI",
+      reasoning: "Logical reasoning and math",
+      multimodal: "Vision and multimodal",
+      embedding: "Text embeddings",
+      general: "General purpose",
+    };
+
+    // --- Hardware Profiles ---
+    const APPLE_CHIPS = [
+      { chip: "M1",       mem_options: [8, 16],              cores: 8,  gpu_cores: 7,  bandwidth: 68.25 },
+      { chip: "M1 Pro",   mem_options: [16, 32],             cores: 10, gpu_cores: 16, bandwidth: 200 },
+      { chip: "M1 Max",   mem_options: [32, 64],             cores: 10, gpu_cores: 32, bandwidth: 400 },
+      { chip: "M1 Ultra", mem_options: [64, 128],            cores: 20, gpu_cores: 64, bandwidth: 800 },
+      { chip: "M2",       mem_options: [8, 16, 24],          cores: 8,  gpu_cores: 10, bandwidth: 100 },
+      { chip: "M2 Pro",   mem_options: [16, 32],             cores: 12, gpu_cores: 19, bandwidth: 200 },
+      { chip: "M2 Max",   mem_options: [32, 64, 96],         cores: 12, gpu_cores: 38, bandwidth: 400 },
+      { chip: "M2 Ultra", mem_options: [64, 128, 192],       cores: 24, gpu_cores: 76, bandwidth: 800 },
+      { chip: "M3",       mem_options: [8, 16, 24],          cores: 8,  gpu_cores: 10, bandwidth: 100 },
+      { chip: "M3 Pro",   mem_options: [18, 36],             cores: 12, gpu_cores: 18, bandwidth: 150 },
+      { chip: "M3 Max",   mem_options: [36, 48, 64, 96, 128],cores: 16, gpu_cores: 40, bandwidth: 400 },
+      { chip: "M4",       mem_options: [16, 24, 32],         cores: 10, gpu_cores: 10, bandwidth: 120 },
+      { chip: "M4 Pro",   mem_options: [24, 48],             cores: 14, gpu_cores: 20, bandwidth: 273 },
+      { chip: "M4 Max",   mem_options: [36, 48, 64, 128],    cores: 16, gpu_cores: 40, bandwidth: 546 },
     ];
+
+    const X86_CPUS = [
+      { name: "Intel Core i5-13600K",    cores: 14, bandwidth: 76.8 },
+      { name: "Intel Core i7-13700K",    cores: 16, bandwidth: 76.8 },
+      { name: "Intel Core i9-13900K",    cores: 24, bandwidth: 76.8 },
+      { name: "Intel Core i7-14700K",    cores: 20, bandwidth: 89.6 },
+      { name: "Intel Core i9-14900K",    cores: 24, bandwidth: 89.6 },
+      { name: "AMD Ryzen 7 7800X3D",     cores: 8,  bandwidth: 76.8 },
+      { name: "AMD Ryzen 9 7950X",       cores: 16, bandwidth: 76.8 },
+      { name: "AMD Ryzen 9 9950X",       cores: 16, bandwidth: 76.8 },
+      { name: "AMD Threadripper 7980X",  cores: 64, bandwidth: 153.6 },
+    ];
+
+    const GPUS = [
+      { name: "RTX 3060 12GB",     vram: 12, bandwidth: 360 },
+      { name: "RTX 3070 8GB",      vram: 8,  bandwidth: 448 },
+      { name: "RTX 3070 Ti 8GB",   vram: 8,  bandwidth: 608 },
+      { name: "RTX 3080 10GB",     vram: 10, bandwidth: 760 },
+      { name: "RTX 3080 Ti 12GB",  vram: 12, bandwidth: 912 },
+      { name: "RTX 3090 24GB",     vram: 24, bandwidth: 936 },
+      { name: "RTX 3090 Ti 24GB",  vram: 24, bandwidth: 1008 },
+      { name: "RTX 4060 8GB",      vram: 8,  bandwidth: 272 },
+      { name: "RTX 4060 Ti 16GB",  vram: 16, bandwidth: 288 },
+      { name: "RTX 4070 12GB",     vram: 12, bandwidth: 504 },
+      { name: "RTX 4070 Ti 12GB",  vram: 12, bandwidth: 672 },
+      { name: "RTX 4080 16GB",     vram: 16, bandwidth: 717 },
+      { name: "RTX 4090 24GB",     vram: 24, bandwidth: 1008 },
+      { name: "RTX 5070 Ti 16GB",  vram: 16, bandwidth: 896 },
+      { name: "RTX 5080 16GB",     vram: 16, bandwidth: 960 },
+      { name: "RTX 5090 32GB",     vram: 32, bandwidth: 1792 },
+      { name: "A100 40GB",         vram: 40, bandwidth: 1555 },
+      { name: "A100 80GB",         vram: 80, bandwidth: 2039 },
+      { name: "H100 80GB",         vram: 80, bandwidth: 3350 },
+      { name: "None (CPU only)",   vram: 0,  bandwidth: 0 },
+    ];
+
+    const X86_RAM_OPTIONS = [16, 32, 64, 128, 256, 512];
 
     // --- API ---
     async function fetchScores(specs, options = {}) {
@@ -58,32 +151,6 @@
     }
 
     // --- Components ---
-    function SliderInput({ label, value, onChange, min, max, step, unit, presets }) {
-      return (
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-            <label className="mono" style={{ fontSize: 11, color: "#8892b0", letterSpacing: 1.5, textTransform: "uppercase" }}>{label}</label>
-            <span className="mono" style={{ fontSize: 14, color: "#ccd6f6", fontWeight: 600 }}>{value} {unit}</span>
-          </div>
-          <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} />
-          {presets && (
-            <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
-              {presets.map((p) => (
-                <button key={p} onClick={() => onChange(p)} style={{
-                  background: value === p ? "rgba(0,255,159,0.15)" : "rgba(255,255,255,0.03)",
-                  border: `1px solid ${value === p ? "#00ff9f" : "rgba(255,255,255,0.08)"}`,
-                  color: value === p ? "#00ff9f" : "#8892b0",
-                  borderRadius: 6, padding: "3px 10px", fontSize: 11,
-                  fontFamily: "'JetBrains Mono', monospace", cursor: "pointer",
-                  transition: "all 0.15s ease",
-                }}>{p}{unit}</button>
-              ))}
-            </div>
-          )}
-        </div>
-      );
-    }
-
     function ScoreBar({ label, value, color }) {
       return (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
@@ -140,17 +207,86 @@
           </div>
 
           {expanded && (
-            <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 24 }}>
-              <div style={{ flex: 1 }}>
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 32 }}>
+              {/* Left column: details */}
+              <div className="mono" style={{ flex: 1, minWidth: 0 }}>
+                <div className="detail-section-title" style={{ marginTop: 0 }}>Model Info</div>
+                <div className="detail-row"><span className="detail-label">Model:</span><span className="detail-value">{model.name}</span></div>
+                <div className="detail-row"><span className="detail-label">Provider:</span><span className="detail-value">{model.provider}</span></div>
+                <div className="detail-row"><span className="detail-label">Parameters:</span><span className="detail-value">{model.params_b}B</span></div>
+                <div className="detail-row"><span className="detail-label">Quantization:</span><span className="detail-value">{model.quant}</span></div>
+                <div className="detail-row"><span className="detail-label">Best Quant:</span><span className="detail-value cyan">{model.quant} (for this hardware)</span></div>
+                <div className="detail-row"><span className="detail-label">Context:</span><span className="detail-value">{model.context.toLocaleString()} tokens</span></div>
+                <div className="detail-row"><span className="detail-label">Use Case:</span><span className="detail-value">{USE_CASE_LABELS[model.use_case] || model.use_case}</span></div>
+                <div className="detail-row"><span className="detail-label">Category:</span><span className="detail-value cyan" style={{ textTransform: "capitalize" }}>{model.use_case}</span></div>
+                {model.architecture && <div className="detail-row"><span className="detail-label">Architecture:</span><span className="detail-value">{model.architecture}</span></div>}
+                {model.release_date && <div className="detail-row"><span className="detail-label">Released:</span><span className="detail-value">{model.release_date}</span></div>}
+                <div className="detail-row"><span className="detail-label">Runtime:</span><span className="detail-value">{model.runtime} (baseline est. ~{model.tok_per_sec} tok/s)</span></div>
+
+                <div className="detail-section-title">Score Breakdown</div>
+                <div className="detail-row">
+                  <span className="detail-label">Overall:</span>
+                  <span className="detail-value green" style={{ fontWeight: 700 }}>{model.score}.0 / 100</span>
+                </div>
+                <div style={{ display: "flex", gap: 16, marginBottom: 6, fontSize: 11 }}>
+                  <span><span style={{ color: "#5a6785" }}>Quality:</span> <span style={{ color: "#ccd6f6" }}>{model.scores.quality}</span></span>
+                  <span><span style={{ color: "#5a6785" }}>Speed:</span> <span style={{ color: "#ccd6f6" }}>{model.scores.speed}</span></span>
+                  <span><span style={{ color: "#5a6785" }}>Fit:</span> <span style={{ color: "#ccd6f6" }}>{model.scores.fit}</span></span>
+                  <span><span style={{ color: "#5a6785" }}>Context:</span> <span style={{ color: "#ccd6f6" }}>{model.scores.context}</span></span>
+                </div>
+                <div className="detail-row"><span className="detail-label">Baseline Est:</span><span className="detail-value">{model.tok_per_sec} tok/s</span></div>
+
+                {model.moe_details && (
+                  <>
+                    <div className="detail-section-title">MoE Architecture</div>
+                    <div className="detail-row">
+                      <span className="detail-label">Active VRAM:</span>
+                      <span className="detail-value cyan">{model.moe_details.active_vram_gb} GB</span>
+                      <span style={{ color: "#5a6785", marginLeft: 4 }}>(vs {model.moe_details.full_vram_gb} GB full model)</span>
+                    </div>
+                    <div className="detail-row"><span className="detail-label">Active Params:</span><span className="detail-value">{model.moe_details.active_params_b}B / {model.moe_details.total_params_b}B total</span></div>
+                    <div className="detail-row"><span className="detail-label">Strategy:</span><span className="detail-value">{model.moe_details.strategy}</span></div>
+                  </>
+                )}
+
+                <div className="detail-section-title">System Fit</div>
+                <div className="detail-row">
+                  <span className="detail-label">Fit Level:</span>
+                  <span style={{ color: fitColor, fontWeight: 600 }}>● {model.fit_level.charAt(0).toUpperCase() + model.fit_level.slice(1)}</span>
+                </div>
+                <div className="detail-row"><span className="detail-label">Run Mode:</span><span className="detail-value" style={{ fontWeight: 600 }}>{MODE_LABELS[model.run_mode]}</span></div>
+
+                <div className="detail-section-title">Memory</div>
+                <div className="detail-row"><span className="detail-label">Model Size:</span><span className="detail-value">{model.mem_gb.toFixed(1)} GB</span></div>
+                {model.full_model_mem_gb && <div className="detail-row"><span className="detail-label">Full Model:</span><span className="detail-value">{model.full_model_mem_gb} GB</span></div>}
+                <div className="detail-row"><span className="detail-label">Rec RAM:</span><span className="detail-value">{model.rec_ram_gb} GB</span></div>
+                <div className="detail-row">
+                  <span className="detail-label">Mem Usage:</span>
+                  <span className="detail-value" style={{ color: model.mem_pct <= 80 ? "#00ff9f" : model.mem_pct <= 95 ? "#ffd93d" : "#ff6b6b" }}>
+                    {model.mem_pct}%
+                  </span>
+                  <span style={{ color: "#5a6785", marginLeft: 4 }}>({model.mem_gb.toFixed(1)} / {model.available_mem_gb} GB{model.unified_memory ? " unified" : ""})</span>
+                </div>
+              </div>
+
+              {/* Right column: score bars + notes */}
+              <div style={{ width: 280, flexShrink: 0 }}>
+                <div className="detail-section-title" style={{ marginTop: 0 }}>Score Components</div>
                 <ScoreBar label="Q" value={model.scores.quality} color="#7c3aed" />
                 <ScoreBar label="S" value={model.scores.speed} color="#06b6d4" />
                 <ScoreBar label="F" value={model.scores.fit} color="#00ff9f" />
                 <ScoreBar label="C" value={model.scores.context} color="#f59e0b" />
-              </div>
-              <div className="mono" style={{ fontSize: 10, color: "#5a6785", lineHeight: 1.8 }}>
-                <div>Context: {model.context.toLocaleString()} tokens</div>
-                <div>Memory utilization: {model.mem_pct}%</div>
-                <div>{model.is_moe ? `MoE: ${model.active_params_b}B active / ${model.params_b}B total` : `Dense: ${model.params_b}B parameters`}</div>
+
+                <div className="detail-section-title">Notes</div>
+                <div className="mono" style={{ fontSize: 10, color: "#8892b0", lineHeight: 1.8 }}>
+                  {model.unified_memory && <div>Unified memory: GPU and CPU share the same pool</div>}
+                  {model.is_moe && model.moe_details && (
+                    <div>MoE: {model.moe_details.active_params_b}B active / {model.moe_details.total_params_b}B total{model.unified_memory ? " (all share unified memory pool)" : ""}</div>
+                  )}
+                  <div>Baseline estimated speed: {model.tok_per_sec} tok/s</div>
+                  {model.hf_downloads > 0 && <div>HuggingFace downloads: {model.hf_downloads.toLocaleString()}</div>}
+                  {!model.is_moe && <div>Dense: {model.params_b}B parameters</div>}
+                </div>
               </div>
             </div>
           )}
@@ -159,40 +295,64 @@
     }
 
     function App() {
-      const [ram, setRam]           = useState(32);
-      const [vram, setVram]         = useState(12);
-      const [cores, setCores]       = useState(8);
-      const [backend, setBackend]   = useState("cuda");
-      const [filterFit, setFilterFit]         = useState("all");
-      const [filterUseCase, setFilterUseCase] = useState("all");
-      const [search, setSearch]     = useState("");
-      const [sortBy, setSortBy]     = useState("score");
-      const [results, setResults]   = useState([]);
+      const [platform, setPlatform]       = useState("apple");
+      const [chipIdx, setChipIdx]         = useState(11); // M4
+      const [memIdx, setMemIdx]           = useState(0);
+      const [cpuIdx, setCpuIdx]           = useState(0);
+      const [gpuIdx, setGpuIdx]           = useState(12); // RTX 4090
+      const [x86Ram, setX86Ram]           = useState(64);
+      const [filterFit, setFilterFit]             = useState("all");
+      const [filterUseCase, setFilterUseCase]     = useState("all");
+      const [search, setSearch]           = useState("");
+      const [sortBy, setSortBy]           = useState("score");
+      const [results, setResults]         = useState([]);
       const [totalModels, setTotalModels] = useState(0);
-      const [loading, setLoading]   = useState(false);
+      const [loading, setLoading]         = useState(false);
       const [sidebarOpen, setSidebarOpen] = useState(true);
       const debounceRef = useRef(null);
 
-      const isCpuOnly = backend === "cpu_x86" || backend === "cpu_arm";
+      // Derived hardware specs
+      const getSpecs = useCallback(() => {
+        if (platform === "apple") {
+          const chip = APPLE_CHIPS[chipIdx];
+          const mem = chip.mem_options[memIdx] || chip.mem_options[0];
+          return {
+            ram_gb: mem,
+            vram_gb: mem,
+            cpu_cores: chip.cores,
+            backend: "metal",
+            bandwidth_gb_s: chip.bandwidth,
+            unified_memory: true,
+          };
+        } else {
+          const cpu = X86_CPUS[cpuIdx];
+          const gpu = GPUS[gpuIdx];
+          const isCpuOnly = gpu.vram === 0;
+          return {
+            ram_gb: x86Ram,
+            vram_gb: gpu.vram,
+            cpu_cores: cpu.cores,
+            backend: isCpuOnly ? "cpu_x86" : "cuda",
+            bandwidth_gb_s: isCpuOnly ? cpu.bandwidth : gpu.bandwidth,
+            unified_memory: false,
+          };
+        }
+      }, [platform, chipIdx, memIdx, cpuIdx, gpuIdx, x86Ram]);
 
       const doFetch = useCallback(() => {
         setLoading(true);
-        const specs = {
-          ram_gb: ram,
-          vram_gb: isCpuOnly ? 0 : vram,
-          cpu_cores: cores,
-          backend,
+        const specs = getSpecs();
+        fetchScores(specs, {
           fit_filter: filterFit,
           use_case_filter: filterUseCase,
           search: search || undefined,
           sort_by: sortBy,
-        };
-        fetchScores(specs).then((data) => {
+        }).then((data) => {
           setResults(data.results || []);
           setTotalModels(data.total_models || 0);
           setLoading(false);
         }).catch(() => setLoading(false));
-      }, [ram, vram, cores, backend, filterFit, filterUseCase, search, sortBy, isCpuOnly]);
+      }, [getSpecs, filterFit, filterUseCase, search, sortBy]);
 
       useEffect(() => {
         clearTimeout(debounceRef.current);
@@ -200,7 +360,15 @@
         return () => clearTimeout(debounceRef.current);
       }, [doFetch]);
 
+      // Reset memory index when chip changes
+      useEffect(() => { setMemIdx(0); }, [chipIdx]);
+
+      const specs = getSpecs();
       const runnable = results.filter((r) => r.fit_level !== "too_tight").length;
+
+      const currentChip = APPLE_CHIPS[chipIdx];
+      const currentCpu = X86_CPUS[cpuIdx];
+      const currentGpu = GPUS[gpuIdx];
 
       return (
         <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
@@ -213,19 +381,19 @@
               <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{
                 background: "none", border: "none", color: "#8892b0", fontSize: 18,
                 cursor: "pointer", padding: "2px 6px", lineHeight: 1,
-              }}>☰</button>
+              }}>&#9776;</button>
               <div style={{
                 width: 30, height: 30, borderRadius: 8,
                 background: "linear-gradient(135deg, #00ff9f 0%, #06b6d4 100%)",
                 display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15,
-              }}><span style={{ color: "#0a0f1c" }}>⚡</span></div>
+              }}><span style={{ color: "#0a0f1c" }}>&#9889;</span></div>
               <div>
                 <div style={{ fontSize: 15, fontWeight: 600, color: "#e2e8f0", letterSpacing: -0.3 }}>llmfit</div>
                 <div className="mono" style={{ fontSize: 9, color: "#5a6785", letterSpacing: 1 }}>HARDWARE-AWARE MODEL FINDER</div>
               </div>
             </div>
             <div className="mono" style={{ fontSize: 11, color: "#5a6785" }}>
-              {totalModels} models · Powered by <a href="https://github.com/AlexsJones/llmfit" target="_blank" rel="noopener" style={{ color: "#4ecdc4", textDecoration: "none" }}>llmfit</a>
+              {totalModels} models &middot; Powered by <a href="https://github.com/AlexsJones/llmfit" target="_blank" rel="noopener" style={{ color: "#4ecdc4", textDecoration: "none" }}>llmfit</a>
             </div>
           </div>
 
@@ -233,39 +401,98 @@
             {/* Sidebar */}
             {sidebarOpen && (
               <div style={{
-                width: 300, borderRight: "1px solid rgba(255,255,255,0.06)",
+                width: 320, borderRight: "1px solid rgba(255,255,255,0.06)",
                 padding: 24, overflowY: "auto", flexShrink: 0,
                 background: "rgba(255,255,255,0.01)",
               }}>
                 <div className="mono" style={{ fontSize: 10, color: "#00ff9f", letterSpacing: 2, marginBottom: 20, textTransform: "uppercase" }}>
-                  ▸ Your Hardware
+                  &#9654; Your Hardware
                 </div>
 
-                <div style={{ marginBottom: 20 }}>
-                  <label className="mono" style={{ fontSize: 11, color: "#8892b0", letterSpacing: 1.5, textTransform: "uppercase", display: "block", marginBottom: 8 }}>GPU Backend</label>
-                  <select value={backend} onChange={(e) => setBackend(e.target.value)} style={{
-                    width: "100%", padding: "8px 12px", background: "rgba(255,255,255,0.04)",
-                    border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8,
-                    color: "#ccd6f6", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", outline: "none", cursor: "pointer",
-                  }}>
-                    {BACKENDS.map((b) => <option key={b.value} value={b.value} style={{ background: "#0a0f1c" }}>{b.label}</option>)}
-                  </select>
+                {/* Platform toggle */}
+                <div style={{ display: "flex", marginBottom: 20 }}>
+                  <button className={`platform-btn ${platform === "apple" ? "active" : ""}`}
+                    onClick={() => setPlatform("apple")}>Apple Silicon</button>
+                  <button className={`platform-btn ${platform === "x86" ? "active" : ""}`}
+                    onClick={() => setPlatform("x86")}>x86 / PC</button>
                 </div>
 
-                <SliderInput label="System RAM" value={ram} onChange={setRam} min={4} max={256} step={4} unit="GB" presets={[8, 16, 32, 64, 128]} />
-                {!isCpuOnly && (
-                  <SliderInput label="GPU VRAM" value={vram} onChange={setVram} min={2} max={80} step={2} unit="GB" presets={[8, 12, 16, 24, 48, 80]} />
+                {platform === "apple" ? (
+                  <>
+                    {/* Chip selector */}
+                    <label className="section-label">Chip</label>
+                    <select className="hw-select" value={chipIdx}
+                      onChange={(e) => setChipIdx(Number(e.target.value))}
+                      style={{ marginBottom: 16 }}>
+                      {APPLE_CHIPS.map((c, i) => (
+                        <option key={c.chip} value={i}>Apple {c.chip}</option>
+                      ))}
+                    </select>
+
+                    {/* Memory selector */}
+                    <label className="section-label">Unified Memory</label>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
+                      {currentChip.mem_options.map((m, i) => (
+                        <button key={m} className={`ram-btn ${memIdx === i ? "active" : ""}`}
+                          onClick={() => setMemIdx(i)}>{m} GB</button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* CPU selector */}
+                    <label className="section-label">Processor</label>
+                    <select className="hw-select" value={cpuIdx}
+                      onChange={(e) => setCpuIdx(Number(e.target.value))}
+                      style={{ marginBottom: 16 }}>
+                      {X86_CPUS.map((c, i) => (
+                        <option key={c.name} value={i}>{c.name}</option>
+                      ))}
+                    </select>
+
+                    {/* RAM selector */}
+                    <label className="section-label">System RAM</label>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap" }}>
+                      {X86_RAM_OPTIONS.map((r) => (
+                        <button key={r} className={`ram-btn ${x86Ram === r ? "active" : ""}`}
+                          onClick={() => setX86Ram(r)}>{r} GB</button>
+                      ))}
+                    </div>
+
+                    {/* GPU selector */}
+                    <label className="section-label">GPU</label>
+                    <select className="hw-select" value={gpuIdx}
+                      onChange={(e) => setGpuIdx(Number(e.target.value))}
+                      style={{ marginBottom: 20 }}>
+                      {GPUS.map((g, i) => (
+                        <option key={g.name} value={i}>{g.name}</option>
+                      ))}
+                    </select>
+                  </>
                 )}
-                <SliderInput label="CPU Cores" value={cores} onChange={setCores} min={2} max={128} step={2} unit="" presets={[4, 8, 16, 32, 64]} />
 
+                {/* System Profile */}
                 <div style={{
-                  marginTop: 24, padding: 14, borderRadius: 10,
+                  padding: 14, borderRadius: 10,
                   background: "rgba(0,255,159,0.03)", border: "1px solid rgba(0,255,159,0.08)",
                 }}>
                   <div className="mono" style={{ fontSize: 10, color: "#00ff9f", letterSpacing: 1.5, marginBottom: 8, textTransform: "uppercase" }}>System Profile</div>
                   <div className="mono" style={{ fontSize: 11, color: "#8892b0", lineHeight: 1.9 }}>
-                    <div>{ram}GB RAM · {cores} cores</div>
-                    <div>{isCpuOnly ? "No GPU" : `${vram}GB VRAM · ${BACKENDS.find(b => b.value === backend)?.label}`}</div>
+                    {platform === "apple" ? (
+                      <>
+                        <div>Apple {currentChip.chip} ({currentChip.cores} CPU + {currentChip.gpu_cores} GPU cores)</div>
+                        <div>{currentChip.mem_options[memIdx] || currentChip.mem_options[0]} GB unified memory</div>
+                        <div>{currentChip.bandwidth} GB/s bandwidth</div>
+                        <div style={{ fontSize: 10, color: "#5a6785" }}>Runtime: MLX</div>
+                      </>
+                    ) : (
+                      <>
+                        <div>{currentCpu.name} ({currentCpu.cores} cores)</div>
+                        <div>{x86Ram} GB RAM</div>
+                        <div>{currentGpu.vram > 0 ? `${currentGpu.name} · ${currentGpu.bandwidth} GB/s` : "No GPU (CPU only)"}</div>
+                        <div style={{ fontSize: 10, color: "#5a6785" }}>Runtime: llama.cpp ({currentGpu.vram > 0 ? "CUDA" : "CPU"})</div>
+                      </>
+                    )}
                     <div style={{ marginTop: 6, color: "#00ff9f", fontWeight: 600 }}>{runnable} runnable models</div>
                   </div>
                 </div>
@@ -280,7 +507,7 @@
                 display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap",
               }}>
                 <div style={{ position: "relative", flex: 1, minWidth: 180 }}>
-                  <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#5a6785", fontSize: 13 }}>⌕</span>
+                  <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "#5a6785", fontSize: 13 }}>&#8981;</span>
                   <input type="text" placeholder="Search models, providers..." value={search}
                     onChange={(e) => setSearch(e.target.value)}
                     style={{
@@ -332,7 +559,7 @@
               <div style={{ flex: 1, overflowY: "auto" }}>
                 {results.length === 0 && !loading ? (
                   <div style={{ padding: 48, textAlign: "center", color: "#5a6785" }}>
-                    <div style={{ fontSize: 32, marginBottom: 12 }}>∅</div>
+                    <div style={{ fontSize: 32, marginBottom: 12 }}>&empty;</div>
                     <div className="mono" style={{ fontSize: 12 }}>No models match your criteria</div>
                     <div style={{ fontSize: 11, marginTop: 4, color: "#3d4663" }}>Try adjusting your hardware specs or relaxing filters</div>
                   </div>
@@ -346,7 +573,7 @@
                 padding: "10px 20px", borderTop: "1px solid rgba(255,255,255,0.06)",
                 fontSize: 10, color: "#3d4663", display: "flex", justifyContent: "space-between",
               }}>
-                <span>Showing {results.length} models · Click any row for details</span>
+                <span>Showing {results.length} models &middot; Click any row for details</span>
                 <span>Scoring engine based on llmfit formulas</span>
               </div>
             </div>

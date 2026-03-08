@@ -33,13 +33,14 @@ const USE_CASE_WEIGHTS = {
 };
 
 function scoreModel(model, specs) {
-  const { ram_gb, vram_gb, cpu_cores, backend } = specs;
+  const { ram_gb, vram_gb, cpu_cores, backend, bandwidth_gb_s, unified_memory } = specs;
   const hasGpu = vram_gb > 0 && backend !== "cpu_x86" && backend !== "cpu_arm";
   const effectiveParams = model.is_moe && model.active_params_b ? model.active_params_b : model.params_b;
   const totalParams = model.params_b;
 
   let bestQuant = null;
   let modelMemGb = Infinity;
+  let fullModelMemGb = 0;
   let runMode = "too_tight";
 
   for (const q of QUANT_HIERARCHY) {
@@ -49,7 +50,22 @@ function scoreModel(model, specs) {
       ? (model.active_params_b * q.bpp) / 8 * 1.15
       : memWithOverhead;
 
-    if (hasGpu && moeMemNeeded <= vram_gb) {
+    fullModelMemGb = memWithOverhead;
+
+    if (unified_memory) {
+      // Apple Silicon: unified memory pool, everything is "gpu" via Metal
+      if (moeMemNeeded <= ram_gb) {
+        bestQuant = q;
+        modelMemGb = model.is_moe ? moeMemNeeded : memWithOverhead;
+        runMode = model.is_moe ? "moe" : "gpu";
+        break;
+      } else if (memWithOverhead <= ram_gb) {
+        bestQuant = q;
+        modelMemGb = memWithOverhead;
+        runMode = "gpu";
+        break;
+      }
+    } else if (hasGpu && moeMemNeeded <= vram_gb) {
       bestQuant = q;
       modelMemGb = model.is_moe ? moeMemNeeded : memWithOverhead;
       runMode = model.is_moe ? "moe" : "gpu";
@@ -74,16 +90,23 @@ function scoreModel(model, specs) {
   const quantPenalty = (1 - bestQuant.quality) * 30;
   const qualityScore = Math.max(0, Math.min(100, paramScore - quantPenalty));
 
-  // Speed score (0-100)
-  const K = BACKEND_SPEEDS[backend] || 70;
-  let tokPerSec = (K / effectiveParams) * bestQuant.speed;
-  if (runMode === "cpu+gpu") tokPerSec *= 0.5;
-  if (runMode === "cpu") tokPerSec *= 0.3;
-  if (model.is_moe) tokPerSec *= 0.8;
+  // Speed score (0-100) — use bandwidth-based estimation when available
+  let tokPerSec;
+  if (bandwidth_gb_s && modelMemGb > 0) {
+    tokPerSec = (bandwidth_gb_s / modelMemGb) * 0.55;
+    if (runMode === "cpu+gpu") tokPerSec *= 0.5;
+    if (model.is_moe) tokPerSec *= 0.8;
+  } else {
+    const K = BACKEND_SPEEDS[backend] || 70;
+    tokPerSec = (K / effectiveParams) * bestQuant.speed;
+    if (runMode === "cpu+gpu") tokPerSec *= 0.5;
+    if (runMode === "cpu") tokPerSec *= 0.3;
+    if (model.is_moe) tokPerSec *= 0.8;
+  }
   const speedScore = Math.min(100, tokPerSec * 2.5);
 
   // Fit score (0-100)
-  const availableMem = hasGpu ? vram_gb : ram_gb;
+  const availableMem = unified_memory ? ram_gb : (hasGpu ? vram_gb : ram_gb);
   const utilization = modelMemGb / availableMem;
   let fitScore;
   if (utilization >= 0.5 && utilization <= 0.8) fitScore = 100;
@@ -110,6 +133,31 @@ function scoreModel(model, specs) {
   else if (runMode === "cpu") fitLevel = "marginal";
   else fitLevel = utilization > 0.95 ? "marginal" : "good";
 
+  // MoE details
+  let moe_details = null;
+  if (model.is_moe && model.active_params_b) {
+    const activeVram = (model.active_params_b * bestQuant.bpp) / 8;
+    moe_details = {
+      active_params_b: model.active_params_b,
+      total_params_b: model.params_b,
+      active_vram_gb: Math.round(activeVram * 10) / 10,
+      full_vram_gb: Math.round(fullModelMemGb * 10) / 10,
+      strategy: modelMemGb <= availableMem * 0.8
+        ? "All experts loaded in VRAM (optimal)"
+        : "Experts partially offloaded",
+    };
+  }
+
+  // Runtime label
+  const RUNTIME_LABELS = {
+    metal: "MLX",
+    cuda: "llama.cpp (CUDA)",
+    rocm: "llama.cpp (ROCm)",
+    sycl: "llama.cpp (SYCL)",
+    cpu_arm: "llama.cpp (CPU ARM)",
+    cpu_x86: "llama.cpp (CPU x86)",
+  };
+
   return {
     name: model.name,
     provider: model.provider,
@@ -131,6 +179,16 @@ function scoreModel(model, specs) {
       fit:     Math.round(fitScore),
       context: Math.round(contextScore),
     },
+    // Extended fields
+    architecture: model.architecture || null,
+    release_date: model.release_date || null,
+    hf_downloads: model.hf_downloads || 0,
+    runtime: RUNTIME_LABELS[backend] || backend,
+    available_mem_gb: availableMem,
+    full_model_mem_gb: Math.round(fullModelMemGb * 10) / 10,
+    rec_ram_gb: Math.round(modelMemGb * 1.3 * 10) / 10,
+    unified_memory: !!unified_memory,
+    moe_details,
   };
 }
 
